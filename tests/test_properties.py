@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 from datetime import date, timedelta
+from fractions import Fraction
 
 import pytest
 from hypothesis import given
@@ -48,16 +49,39 @@ def test_money_exact_fixed_point_algebra(a: Money, b: Money, c: Money) -> None:
     assert a - a == ZERO
 
 
+def _expected_half_up_cents(exact: Fraction) -> int:
+    if exact == 0:
+        return 0
+    sign = -1 if exact < 0 else 1
+    abs_frac = abs(exact)
+    whole, rem = divmod(abs_frac.numerator, abs_frac.denominator)
+    if rem * 2 >= abs_frac.denominator:
+        whole += 1
+    return sign * whole
+
+
 @given(
-    m=_MONEY_NONNEG,
-    num=st.integers(min_value=0, max_value=500),
-    den=st.integers(min_value=1, max_value=1000),
+    m=_MONEY_ANY,
+    num=st.integers(min_value=-500, max_value=500),
+    den=st.integers(min_value=-1000, max_value=1000).filter(lambda x: x != 0),
 )
 def test_money_mul_ratio_exactness_and_monotonicity(m: Money, num: int, den: int) -> None:
     scaled = m.mul_ratio(num, den)
-    assert scaled >= ZERO
-    bigger = (m + Money(100)).mul_ratio(num, den)
-    assert bigger >= scaled
+    assert scaled.cents == _expected_half_up_cents(Fraction(m.cents * num, den))
+    if num >= 0 and den > 0:
+        bigger = (m + Money(100)).mul_ratio(num, den)
+        assert bigger >= scaled
+
+
+@given(
+    sign=st.sampled_from(["", "+", "-"]),
+    whole=st.integers(min_value=0, max_value=999_999),
+    frac=st.text(alphabet="0123456789", min_size=0, max_size=6),
+)
+def test_money_parse_matches_exact_fraction_half_up(sign: str, whole: int, frac: str) -> None:
+    text = f"{sign}{whole}.{frac}" if frac else f"{sign}{whole}"
+    expected_cents = _expected_half_up_cents(Fraction(text) * 100)
+    assert parse_money(text).cents == expected_cents
 
 
 @given(

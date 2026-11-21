@@ -6,6 +6,9 @@ import json
 import urllib.parse
 from collections.abc import Callable
 from pathlib import Path
+from typing import Any
+
+import pytest
 
 from ledgerdemain.adapters.base import normalize_description
 from ledgerdemain.adapters.capital_one import CapitalOneCsvAdapter, CapitalOnePdfAdapter
@@ -17,7 +20,7 @@ from ledgerdemain.categorize import Categorizer
 from ledgerdemain.config import GrasshopperConfig, HarvestConfig
 from ledgerdemain.db import LedgerDB, make_bank_fingerprint
 from ledgerdemain.http_client import HttpClient, HttpResponse
-from ledgerdemain.models import BankTransaction
+from ledgerdemain.models import BankTransaction, HarvestInvoiceLineItem
 from ledgerdemain.money import ZERO, Money
 from ledgerdemain.planner import Planner
 from ledgerdemain.reconcile import Reconciler
@@ -547,3 +550,134 @@ def test_gusto_payroll_journal_multi_section_and_scorp_imputed_benefits(tmp_path
                 if li.account_key == "payroll_taxes_payable":
                     tax_net += li.amount if li.balance == "INCREASE" else -li.amount
         assert tax_net == ZERO
+
+
+def test_grasshopper_amount_cents_integral_float_and_non_integral_rejection() -> None:
+    def fetch_payload(tx_rows: list[dict[str, object]]) -> list[BankTransaction]:
+        def handler(
+            method: str, url: str, headers: dict[str, str], body: bytes | None
+        ) -> HttpResponse:
+            del method, url, headers, body
+            return HttpResponse(200, {}, json.dumps({"transactions": tx_rows}).encode("utf-8"))
+
+        api = GrasshopperApiAdapter(
+            GrasshopperConfig(account_id="acct-99", access_token="gh-tok", header_secret="sec-123"),
+            http_client=HttpClient(
+                transport=_RoutingMockTransport(handler),
+                sleep_fn=lambda _: None,
+            ),
+        )
+        return api.fetch_transactions()
+
+    txs = fetch_payload(
+        [
+            {
+                "id": "gh-float-cents",
+                "posted_date": "2026-01-07",
+                "description": "FLOAT CENTS DEBIT",
+                "amount_cents": 1234.0,
+                "direction": "DEBIT",
+            },
+            {
+                "id": "gh-str-cents",
+                "posted_date": "2026-01-08",
+                "description": "STRING CENTS CREDIT",
+                "amount_cents": "5678.00",
+                "direction": "CREDIT",
+            },
+        ]
+    )
+    assert len(txs) == 2
+    assert txs[0].amount == Money(1234)
+    assert txs[1].amount == Money(5678)
+
+    with pytest.raises(ValueError, match="Non-integral amount_cents"):
+        fetch_payload(
+            [
+                {
+                    "id": "gh-frac-cents",
+                    "posted_date": "2026-01-09",
+                    "description": "FRAC CENTS",
+                    "amount_cents": 1234.5,
+                    "direction": "DEBIT",
+                }
+            ]
+        )
+
+    with pytest.raises(TypeError, match="does not accept bool"):
+        fetch_payload(
+            [
+                {
+                    "id": "gh-bool-cents",
+                    "posted_date": "2026-01-10",
+                    "description": "BOOL CENTS",
+                    "amount_cents": True,
+                    "direction": "DEBIT",
+                }
+            ]
+        )
+
+
+def test_harvest_line_item_quantity_validation() -> None:
+    def parse_invoice_qty(raw_qty: object, *, omit_qty: bool = False) -> str:
+        line: dict[str, object] = {
+            "kind": "Service",
+            "description": "Consulting",
+            "unit_price": "100.00",
+            "amount": "100.00",
+        }
+        if not omit_qty:
+            line["quantity"] = raw_qty
+        inv = HarvestApiAdapter._parse_api_invoice(
+            {
+                "id": 999,
+                "number": "999",
+                "client": {"id": 1, "name": "Acme"},
+                "issue_date": "2026-01-01",
+                "due_date": "2026-01-31",
+                "state": "open",
+                "currency": "USD",
+                "amount": "100.00",
+                "due_amount": "100.00",
+                "line_items": [line],
+            }
+        )
+        return inv.line_items[0].quantity
+
+    for valid in ("1", "20", "2.5", "0.25", " 3.5 "):
+        direct = HarvestInvoiceLineItem(
+            kind="Service",
+            description="Consulting",
+            quantity=valid,
+            unit_price=Money(10000),
+            amount=Money(10000),
+        )
+        assert direct.quantity == valid.strip()
+        assert parse_invoice_qty(valid) == valid.strip()
+
+    assert parse_invoice_qty(None) == "1"
+    assert parse_invoice_qty(None, omit_qty=True) == "1"
+
+    for invalid in ("abc", "", "   ", "NaN", "inf"):
+        with pytest.raises(ValueError):
+            HarvestInvoiceLineItem(
+                kind="Service",
+                description="Consulting",
+                quantity=invalid,
+                unit_price=Money(10000),
+                amount=Money(10000),
+            )
+        with pytest.raises(ValueError):
+            parse_invoice_qty(invalid)
+
+    bad_bool: Any = True
+    with pytest.raises(TypeError):
+        HarvestInvoiceLineItem(
+            kind="Service",
+            description="Consulting",
+            quantity=bad_bool,
+            unit_price=Money(10000),
+            amount=Money(10000),
+        )
+    with pytest.raises(ValueError):
+        parse_invoice_qty(True)

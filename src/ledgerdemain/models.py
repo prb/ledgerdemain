@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from typing import Any
 
 from ledgerdemain.money import ZERO, Money, format_money, parse_money
+
+_QUANTITY_RE = re.compile(r"^[+-]?(?:\d+(?:\.\d+)?|\.\d+)$")
 
 
 @dataclass(slots=True)
@@ -51,6 +54,16 @@ class HarvestInvoiceLineItem:
     amount: Money
     taxed: bool = False
 
+    def __post_init__(self) -> None:
+        if not isinstance(self.quantity, str):
+            raise TypeError(
+                f"HarvestInvoiceLineItem.quantity must be str, got {type(self.quantity).__name__}"
+            )
+        cleaned = self.quantity.strip()
+        if not _QUANTITY_RE.match(cleaned):
+            raise ValueError(f"Invalid line-item quantity: {self.quantity!r}")
+        self.quantity = cleaned
+
     def to_dict(self) -> dict[str, Any]:
         """Serialize line item for JSON storage."""
         return {
@@ -65,12 +78,12 @@ class HarvestInvoiceLineItem:
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> HarvestInvoiceLineItem:
         """Deserialize line item from stored JSON."""
-        raw_qty = data.get("quantity", "1")
-        qty = str(raw_qty).strip() if raw_qty is not None else ""
+        raw_qty = data.get("quantity")
+        qty = "1" if raw_qty is None else str(raw_qty)
         return cls(
             kind=str(data.get("kind", "")),
             description=str(data.get("description", "")),
-            quantity=qty or "1",
+            quantity=qty,
             unit_price=parse_money(data.get("unit_price", "0.00")),
             amount=parse_money(data.get("amount", "0.00")),
             taxed=bool(data.get("taxed", False)),

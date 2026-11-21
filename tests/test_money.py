@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import math
 from typing import Any
 
 import pytest
@@ -18,17 +17,23 @@ def test_money_construction_and_from_cents() -> None:
     assert Money.from_cents("-0") == ZERO
 
     bad_float: Any = 12.34
+    bad_bool: Any = True
     with pytest.raises(TypeError):
         Money(True)
     with pytest.raises(TypeError):
         Money(bad_float)
+    with pytest.raises(TypeError):
+        Money.from_cents(bad_bool)
+    with pytest.raises(TypeError):
+        Money.from_cents(bad_float)
+
+    for bad_cents_str in ("", "  ", "12.34", "abc"):
+        with pytest.raises(ValueError):
+            Money.from_cents(bad_cents_str)
 
 
-def test_money_parse_formats_rounding_and_errors() -> None:
+def test_money_parse_valid_formats_and_defaults() -> None:
     assert parse_money(None, default=ZERO) == ZERO
-    with pytest.raises(ValueError):
-        parse_money(None)
-
     assert parse_money(Money(250)) == Money(250)
     assert parse_money(5) == Money(500)
     assert parse_money(-12) == Money(-1200)
@@ -46,11 +51,20 @@ def test_money_parse_formats_rounding_and_errors() -> None:
     assert parse_money("N/A", default=ZERO) == ZERO
     assert parse_money("--", default=Money(100)) == Money(100)
 
-    # Exact half-up rounding away from zero on sub-cent inputs
+
+def test_money_parse_half_up_rounding_boundaries() -> None:
     assert parse_money("0.005") == Money(1)
     assert parse_money("-0.005") == Money(-1)
     assert parse_money("0.004") == ZERO
     assert parse_money("-0.004") == ZERO
+    assert parse_money("-0.001") == ZERO
+    assert parse_money("1.235") == Money(124)
+    assert parse_money("-1.235") == Money(-124)
+
+
+def test_money_parse_invalid_inputs_rejected() -> None:
+    with pytest.raises(ValueError):
+        parse_money(None)
 
     for bad in ("", "N/A", "abc", "--5.00", "1e5000", float("nan"), float("inf")):
         with pytest.raises(ValueError):
@@ -89,11 +103,13 @@ def test_money_strict_type_safety_and_operators() -> None:
         _ = a < bad_cmp
 
 
-def test_money_mul_ratio_and_formatting() -> None:
+def test_money_mul_ratio_edge_cases_and_errors() -> None:
     assert Money(100000).mul_ratio(1, 1000) == Money(100)
     assert Money(100000).mul_ratio(4, 100) + Money(35) == Money(4035)
     assert Money(1).mul_ratio(1, 2) == Money(1)
     assert Money(-1).mul_ratio(1, 2) == Money(-1)
+    assert Money(1).mul_ratio(1, -2) == Money(-1)
+    assert Money(-1).mul_ratio(-1, 2) == Money(1)
     assert Money(1).mul_ratio(1, 3) == ZERO
     assert Money(500).mul_ratio(0, 7) == ZERO
 
@@ -102,9 +118,10 @@ def test_money_mul_ratio_and_formatting() -> None:
     with pytest.raises(TypeError):
         Money(100).mul_ratio(True, 2)
 
+
+def test_money_formatting() -> None:
     assert format_money(ZERO) == "0.00"
     assert str(Money(5)) == "0.05"
     assert format_money(Money(-5)) == "-0.05"
     assert Money(1234567).format_comma() == "12,345.67"
     assert Money(-1234567).format_comma() == "-12,345.67"
-    assert not math.isnan(ZERO.cents)

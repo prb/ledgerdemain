@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import csv
+import math
+import re
 from collections import defaultdict
 from pathlib import Path
 from typing import Any
@@ -15,6 +17,27 @@ from ledgerdemain.db import make_bank_fingerprint
 from ledgerdemain.http_client import HttpClient
 from ledgerdemain.models import BankTransaction
 from ledgerdemain.money import ZERO, Money, format_money, parse_money
+
+_INTEGRAL_CENTS_STR_RE = re.compile(r"^([+-]?\d+)(?:\.0+)?$")
+
+
+def _parse_cents_field(value: Any) -> Money:
+    """Parse an amount_cents field, accepting ints/integral floats and rejecting fractions."""
+    if isinstance(value, bool):
+        raise TypeError("amount_cents does not accept bool")
+    if isinstance(value, int):
+        return Money.from_cents(value)
+    if isinstance(value, float):
+        if not math.isfinite(value) or not value.is_integer():
+            raise ValueError(f"Non-integral amount_cents value: {value!r}")
+        return Money.from_cents(int(value))
+    if isinstance(value, str):
+        text = value.strip()
+        match = _INTEGRAL_CENTS_STR_RE.match(text)
+        if not match:
+            raise ValueError(f"Invalid integer-cents value: {value!r}")
+        return Money.from_cents(int(match.group(1)))
+    raise TypeError(f"Unsupported amount_cents type: {type(value).__name__}")
 
 
 def _extract_account_balance(item: dict[str, Any]) -> str:
@@ -237,7 +260,7 @@ class GrasshopperApiAdapter:
         raw_cents = item.get("amount_cents")
         raw_amount_val = item.get("amount")
         if raw_cents is not None and raw_amount_val is None:
-            raw_amt = Money.from_cents(raw_cents if isinstance(raw_cents, int) else str(raw_cents))
+            raw_amt = _parse_cents_field(raw_cents)
         elif isinstance(raw_amount_val, int) and not isinstance(raw_amount_val, bool):
             raw_amt = Money.from_cents(raw_amount_val)
         else:

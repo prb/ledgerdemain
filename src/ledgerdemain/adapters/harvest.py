@@ -150,8 +150,8 @@ class HarvestApiAdapter:
 
         line_items: list[HarvestInvoiceLineItem] = []
         for li in item.get("line_items") or []:
-            raw_qty = li.get("quantity", "1")
-            qty = (str(raw_qty).strip() if raw_qty is not None else "") or "1"
+            raw_qty = li.get("quantity")
+            qty = "1" if raw_qty is None else str(raw_qty)
             unit_price = parse_money(li.get("unit_price"), ZERO)
             li_amount = parse_money(li.get("amount"), ZERO)
             line_items.append(

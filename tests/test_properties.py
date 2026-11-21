@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import re
 from datetime import date, timedelta
-from decimal import Decimal
 
 import pytest
 from hypothesis import given
@@ -16,29 +15,49 @@ from ledgerdemain.categorize import Categorizer
 from ledgerdemain.config import CategorizationRule
 from ledgerdemain.db import make_bank_fingerprint
 from ledgerdemain.models import (
-    ZERO,
     BankTransaction,
     GustoPayrollRun,
     StagedLineItem,
-    fmt_decimal,
-    to_decimal,
 )
+from ledgerdemain.money import ZERO, Money, format_money, parse_money
 from ledgerdemain.planner import BalanceError, validate_double_entry_balance
 
-_MONEY_POS = st.decimals(min_value=Decimal("0.01"), max_value=Decimal("50000.00"), places=2)
-_MONEY_NONNEG = st.decimals(min_value=Decimal("0.00"), max_value=Decimal("20000.00"), places=2)
-_MONEY_ANY = st.decimals(min_value=Decimal("-999999.99"), max_value=Decimal("999999.99"), places=2)
+_MONEY_POS = st.integers(min_value=1, max_value=5_000_000).map(Money)
+_MONEY_NONNEG = st.integers(min_value=0, max_value=2_000_000).map(Money)
+_MONEY_ANY = st.integers(min_value=-99_999_999, max_value=99_999_999).map(Money)
 
 
-@given(d=_MONEY_ANY)
-def test_decimal_roundtrip_and_currency_formats(d: Decimal) -> None:
-    assert to_decimal(fmt_decimal(d)) == d
+@given(m=_MONEY_ANY)
+def test_money_roundtrip_and_currency_formats(m: Money) -> None:
+    assert parse_money(format_money(m)) == m
+    assert Money.from_cents(m.cents) == m
 
-    abs_str = f"{abs(d):,.2f}"
-    assert to_decimal(f"${abs_str}") == abs(d)
-    if d != ZERO:
-        assert to_decimal(f"-${abs_str}") == -abs(d)
-        assert to_decimal(f"(${abs_str})") == -abs(d)
+    abs_str = abs(m).format_comma()
+    assert parse_money(f"${abs_str}") == abs(m)
+    if m != ZERO:
+        assert parse_money(f"-${abs_str}") == -abs(m)
+        assert parse_money(f"(${abs_str})") == -abs(m)
+
+
+@given(a=_MONEY_ANY, b=_MONEY_ANY, c=_MONEY_ANY)
+def test_money_exact_fixed_point_algebra(a: Money, b: Money, c: Money) -> None:
+    assert (a + b) + c == a + (b + c)
+    assert a + b == b + a
+    assert (a + b) - b == a
+    assert a + ZERO == a
+    assert a - a == ZERO
+
+
+@given(
+    m=_MONEY_NONNEG,
+    num=st.integers(min_value=0, max_value=500),
+    den=st.integers(min_value=1, max_value=1000),
+)
+def test_money_mul_ratio_exactness_and_monotonicity(m: Money, num: int, den: int) -> None:
+    scaled = m.mul_ratio(num, den)
+    assert scaled >= ZERO
+    bigger = (m + Money(100)).mul_ratio(num, den)
+    assert bigger >= scaled
 
 
 @given(
@@ -55,7 +74,7 @@ def test_decimal_roundtrip_and_currency_formats(d: Decimal) -> None:
 )
 def test_double_entry_balance_and_imbalance_rejection(
     anchor_account: str,
-    specs: list[tuple[str, str, Decimal]],
+    specs: list[tuple[str, str, Money]],
 ) -> None:
     account_normals: dict[str, str] = {anchor_account: "DEBIT"}
     line_items: list[StagedLineItem] = []
@@ -79,12 +98,12 @@ def test_double_entry_balance_and_imbalance_rejection(
 
     if net_debit == ZERO:
         # Nudge first item so total net debit is strictly non-zero
-        line_items[0].amount += Decimal("0.01")
+        line_items[0].amount += Money(1)
         normal0, balance0, _ = specs[0]
         if normal0 == "DEBIT":
-            net_debit += Decimal("0.01") if balance0 == "INCREASE" else Decimal("-0.01")
+            net_debit += Money(1) if balance0 == "INCREASE" else Money(-1)
         else:
-            net_debit += Decimal("-0.01") if balance0 == "INCREASE" else Decimal("0.01")
+            net_debit += Money(-1) if balance0 == "INCREASE" else Money(1)
 
     direction = "WITHDRAWAL" if net_debit > ZERO else "DEPOSIT"
     anchor_amount = abs(net_debit)
@@ -105,7 +124,7 @@ def test_double_entry_balance_and_imbalance_rejection(
         StagedLineItem(
             account_key=li.account_key,
             wave_account_id=li.wave_account_id,
-            amount=li.amount + Decimal("0.01") if i == 0 else li.amount,
+            amount=li.amount + Money(1) if i == 0 else li.amount,
             balance=li.balance,
         )
         for i, li in enumerate(line_items)
@@ -148,12 +167,12 @@ def test_double_entry_balance_and_imbalance_rejection(
     er_benefits=_MONEY_NONNEG,
 )
 def test_gusto_payroll_identity_and_clearing_balances(
-    net_pay: Decimal,
-    reimbursements: Decimal,
-    ee_taxes: Decimal,
-    er_taxes: Decimal,
-    ee_benefits: Decimal,
-    er_benefits: Decimal,
+    net_pay: Money,
+    reimbursements: Money,
+    ee_taxes: Money,
+    er_taxes: Money,
+    ee_benefits: Money,
+    er_benefits: Money,
 ) -> None:
     gross_wages = net_pay + ee_taxes + ee_benefits
     run = GustoPayrollRun(
@@ -265,7 +284,7 @@ def test_deterministic_fingerprinting(
     source: str,
     tx_date: date,
     direction: str,
-    amount: Decimal,
+    amount: Money,
     desc: str,
     occ: int,
 ) -> None:
@@ -287,7 +306,7 @@ def test_deterministic_fingerprinting(
         occ,
     )
     fp_other_amt = make_bank_fingerprint(
-        source, "acct", None, iso, direction, amount + Decimal("0.01"), norm, occ
+        source, "acct", None, iso, direction, amount + Money(1), norm, occ
     )
     assert fp1 != fp_next_occ
     assert fp1 != fp_other_dir
@@ -339,7 +358,7 @@ def test_categorizer_priority_monotonicity(priorities: list[int], data: st.DataO
         posted_date="2026-01-05",
         description="VENDOR CHARGE",
         normalized_description="VENDOR CHARGE",
-        amount=Decimal("10.00"),
+        amount=Money.parse("10.00"),
         direction="WITHDRAWAL",
     )
     result = Categorizer(list(permuted)).categorize(tx)
@@ -360,7 +379,7 @@ def test_categorizer_priority_monotonicity(priorities: list[int], data: st.DataO
 def test_ofx_xml_roundtrip_preserves_dates_direction_fitid_and_card(
     dt_user: date,
     lag_days: int,
-    amount: Decimal,
+    amount: Money,
     is_credit: bool,
     card_num: int,
     fit_num: int,
@@ -382,7 +401,7 @@ def test_ofx_xml_roundtrip_preserves_dates_direction_fitid_and_card(
         f"  <TRNTYPE>{trn_type}</TRNTYPE>\n"
         f"  <DTPOSTED>{dt_posted.strftime('%Y%m%d')}000000.000</DTPOSTED>\n"
         f"  <DTUSER>{dt_user.strftime('%Y%m%d')}000000.000</DTUSER>\n"
-        f"  <TRNAMT>{fmt_decimal(signed)}</TRNAMT>\n"
+        f"  <TRNAMT>{format_money(signed)}</TRNAMT>\n"
         f"  <FITID>{fit_id}</FITID>\n"
         "  <NAME>SYNTHETIC MERCHANT</NAME>\n"
         f"  <CCACCTTO><ACCTID>{card_str}</ACCTID></CCACCTTO>\n"
@@ -407,7 +426,7 @@ def test_ofx_xml_roundtrip_preserves_dates_direction_fitid_and_card(
     amount=_MONEY_POS,
     clearing_normal=st.sampled_from(["DEBIT", "CREDIT"]),
 )
-def test_bank_transfer_clearing_nets_to_zero(amount: Decimal, clearing_normal: str) -> None:
+def test_bank_transfer_clearing_nets_to_zero(amount: Money, clearing_normal: str) -> None:
     normals = {
         "grasshopper_savings": "DEBIT",
         "grasshopper_money_market": "DEBIT",

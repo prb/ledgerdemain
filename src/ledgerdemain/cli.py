@@ -19,7 +19,7 @@ from ledgerdemain.adapters.ofx import OfxStatement, OfxTransactionParser
 from ledgerdemain.categorize import Categorizer
 from ledgerdemain.config import AppConfig, ConfigError, load_config, load_rules
 from ledgerdemain.db import LedgerDB
-from ledgerdemain.models import fmt_decimal
+from ledgerdemain.money import format_money
 from ledgerdemain.planner import Planner, validate_double_entry_balance
 from ledgerdemain.reconcile import Reconciler
 from ledgerdemain.report import build_report, format_report_text
@@ -292,7 +292,7 @@ def _print_ofx_summary(path: Path, stmt: OfxStatement, account_key: str = "") ->
     date_range = f"{stmt.start_date or '?'}..{stmt.end_date or '?'}"
     acct_tag = f" [{account_key}]" if account_key else ""
     bal = (
-        f" | ledger_bal=${fmt_decimal(stmt.ledger_balance)}"
+        f" | ledger_bal=${format_money(stmt.ledger_balance)}"
         if stmt.ledger_balance is not None
         else ""
     )
@@ -591,7 +591,7 @@ def _cmd_review(args: argparse.Namespace) -> int:
                     "tx_date": tx.tx_date,
                     "anchor_account_key": tx.anchor_account_key,
                     "anchor_direction": tx.anchor_direction,
-                    "anchor_amount": fmt_decimal(tx.anchor_amount),
+                    "anchor_amount": format_money(tx.anchor_amount),
                     "description": tx.description,
                     "status": tx.status,
                     "category_rule": tx.category_rule,
@@ -607,7 +607,7 @@ def _cmd_review(args: argparse.Namespace) -> int:
                     "invoice_number": inv.invoice_number,
                     "customer_name": inv.customer_name,
                     "invoice_date": inv.invoice_date,
-                    "total_amount": fmt_decimal(inv.total_amount),
+                    "total_amount": format_money(inv.total_amount),
                     "status": inv.status,
                 }
                 for inv in invs
@@ -617,7 +617,7 @@ def _cmd_review(args: argparse.Namespace) -> int:
                     "id": m.id,
                     "match_type": m.match_type,
                     "bank_tx_id": m.bank_tx_id,
-                    "matched_amount": fmt_decimal(m.matched_amount),
+                    "matched_amount": format_money(m.matched_amount),
                     "confidence": m.confidence,
                     "reason": m.reason,
                 }
@@ -630,14 +630,14 @@ def _cmd_review(args: argparse.Namespace) -> int:
     print(f"Staged Transactions (filter={args.status}): {len(txs)}")
     for tx in txs:
         cats = ", ".join(
-            f"{li.account_key}:{li.balance}=${fmt_decimal(li.amount)}" for li in tx.line_items
+            f"{li.account_key}:{li.balance}=${format_money(li.amount)}" for li in tx.line_items
         )
         reason = (
             f" | {tx.last_error or tx.review_reason}" if (tx.last_error or tx.review_reason) else ""
         )
         print(
             f"  [tx #{tx.id}] {tx.tx_date} [{tx.status}] {tx.anchor_account_key} "
-            f"{tx.anchor_direction} ${fmt_decimal(tx.anchor_amount)} {tx.description!r} "
+            f"{tx.anchor_direction} ${format_money(tx.anchor_amount)} {tx.description!r} "
             f"-> [{cats}]{reason}"
         )
 
@@ -645,7 +645,7 @@ def _cmd_review(args: argparse.Namespace) -> int:
     for inv in invs:
         print(
             f"  [inv #{inv.id}] #{inv.invoice_number} [{inv.status}] "
-            f"{inv.customer_name} {inv.invoice_date} ${fmt_decimal(inv.total_amount)}"
+            f"{inv.customer_name} {inv.invoice_date} ${format_money(inv.total_amount)}"
         )
 
     if matches:
@@ -653,7 +653,7 @@ def _cmd_review(args: argparse.Namespace) -> int:
         for m in matches:
             print(
                 f"  [match #{m.id}] {m.match_type} bank_tx=#{m.bank_tx_id} "
-                f"${fmt_decimal(m.matched_amount)} conf={m.confidence:.2f} — {m.reason}"
+                f"${format_money(m.matched_amount)} conf={m.confidence:.2f} — {m.reason}"
             )
     return 0
 

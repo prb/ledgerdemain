@@ -2,13 +2,15 @@
 
 from __future__ import annotations
 
-from decimal import Decimal
 from pathlib import Path
 
 from ledgerdemain.categorize import Categorizer
 from ledgerdemain.config import load_rules
 from ledgerdemain.models import BankTransaction
+from ledgerdemain.money import Money
 from tests.fixtures import write_test_workspace_config
+
+_DEFAULT_AMOUNT = Money(2500)
 
 
 def _tx(
@@ -16,7 +18,7 @@ def _tx(
     source: str = "capital_one",
     account_key: str = "capital_one_card",
     description: str = "SOME MERCHANT",
-    amount: Decimal = Decimal("25.00"),
+    amount: Money = _DEFAULT_AMOUNT,
     direction: str = "WITHDRAWAL",
     source_category: str = "",
 ) -> BankTransaction:

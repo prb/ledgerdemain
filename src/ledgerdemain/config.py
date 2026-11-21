@@ -6,11 +6,10 @@ import os
 import re
 import tomllib
 from dataclasses import dataclass, field
-from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
-from ledgerdemain.models import to_decimal
+from ledgerdemain.money import Money, parse_money
 
 _ENV_PATTERN = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}")
 
@@ -229,8 +228,8 @@ class CategorizationRule:
     source: str | None = None
     direction: str | None = None
     source_category_pattern: re.Pattern[str] | None = None
-    min_amount: Decimal | None = None
-    max_amount: Decimal | None = None
+    min_amount: Money | None = None
+    max_amount: Money | None = None
     notes: str = ""
 
 
@@ -411,8 +410,8 @@ def load_rules(path: Path) -> list[CategorizationRule]:
                 source=str(item["source"]) if item.get("source") else None,
                 direction=str(direction).upper() if direction else None,
                 source_category_pattern=re.compile(str(source_cat_raw)) if source_cat_raw else None,
-                min_amount=to_decimal(min_amt) if min_amt is not None else None,
-                max_amount=to_decimal(max_amt) if max_amt is not None else None,
+                min_amount=parse_money(min_amt) if min_amt is not None else None,
+                max_amount=parse_money(max_amt) if max_amt is not None else None,
                 notes=str(item.get("notes", "")),
             )
         )

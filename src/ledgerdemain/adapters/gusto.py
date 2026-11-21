@@ -5,12 +5,12 @@ from __future__ import annotations
 import csv
 import hashlib
 from collections import defaultdict
-from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
 from ledgerdemain.adapters.base import parse_flexible_date
-from ledgerdemain.models import ZERO, GustoPayrollRun, fmt_decimal, to_decimal
+from ledgerdemain.models import GustoPayrollRun
+from ledgerdemain.money import ZERO, Money, format_money, parse_money
 
 _SUMMARY_PREFIXES = (
     "total",
@@ -182,7 +182,7 @@ class GustoPayrollCsvAdapter:
         for pay_date, group_rows in sorted(grouped.items()):
             total_paid = ZERO
             for row in group_rows:
-                amt = self._first_decimal(row, _CONTRACTOR_AMOUNT_COLS)
+                amt = self._first_money(row, _CONTRACTOR_AMOUNT_COLS)
                 total_paid += amt
             fp = self._run_fingerprint(
                 check_date=pay_date,
@@ -327,20 +327,20 @@ class GustoPayrollCsvAdapter:
         employee_benefits = ZERO
         employer_benefits = ZERO
         raw_net_pay = ZERO
-        tax_breakdown: dict[str, Decimal] = defaultdict(lambda: ZERO)
+        tax_breakdown: dict[str, Money] = defaultdict(lambda: ZERO)
 
         for row in rows:
-            gross_wages += self._get_decimal(row, "gross_wages")
-            reimbursements += self._get_decimal(row, "reimbursements")
-            ee_ben_summary = self._get_decimal_or_none(row, "employee_benefits")
+            gross_wages += self._get_money(row, "gross_wages")
+            reimbursements += self._get_money(row, "reimbursements")
+            ee_ben_summary = self._get_money_or_none(row, "employee_benefits")
             if ee_ben_summary is not None:
                 employee_benefits += ee_ben_summary
             else:
                 for col, cell_val in row.items():
                     if cell_val and col.endswith("(employee deduction)"):
-                        employee_benefits += to_decimal(cell_val, ZERO)
+                        employee_benefits += parse_money(cell_val, ZERO)
 
-            er_ben_summary = self._get_decimal_or_none(row, "employer_benefits")
+            er_ben_summary = self._get_money_or_none(row, "employer_benefits")
             if er_ben_summary is not None:
                 employer_benefits += er_ben_summary
             else:
@@ -349,26 +349,26 @@ class GustoPayrollCsvAdapter:
                         col.endswith("(company contribution)")
                         or col.endswith("(employer contribution)")
                     ):
-                        employer_benefits += to_decimal(cell_val, ZERO)
+                        employer_benefits += parse_money(cell_val, ZERO)
 
-            raw_net_pay += self._get_decimal(row, "net_pay")
+            raw_net_pay += self._get_money(row, "net_pay")
 
             ee_itemized = ZERO
             for key, aliases in _EE_TAX_ITEM_COLS:
-                val = self._first_decimal(row, aliases)
+                val = self._first_money(row, aliases)
                 if val != ZERO:
                     tax_breakdown[key] += val
                     ee_itemized += val
 
             er_itemized = ZERO
             for key, aliases in _ER_TAX_ITEM_COLS:
-                val = self._first_decimal(row, aliases)
+                val = self._first_money(row, aliases)
                 if val != ZERO:
                     tax_breakdown[key] += val
                     er_itemized += val
 
-            ee_summary = self._get_decimal_or_none(row, "employee_taxes")
-            er_summary = self._get_decimal_or_none(row, "employer_taxes")
+            ee_summary = self._get_money_or_none(row, "employee_taxes")
+            er_summary = self._get_money_or_none(row, "employer_taxes")
             employee_taxes += ee_summary if ee_summary is not None else ee_itemized
             employer_taxes += er_summary if er_summary is not None else er_itemized
 
@@ -379,8 +379,8 @@ class GustoPayrollCsvAdapter:
         expected_with_reimb = expected_without_reimb + reimbursements
         if (
             reimbursements > ZERO
-            and abs(raw_net_pay - expected_with_reimb) <= Decimal("0.02")
-            and abs(raw_net_pay - expected_without_reimb) > Decimal("0.02")
+            and abs(raw_net_pay - expected_with_reimb) <= Money(2)
+            and abs(raw_net_pay - expected_without_reimb) > Money(2)
         ):
             net_pay = raw_net_pay - reimbursements
         else:
@@ -393,7 +393,7 @@ class GustoPayrollCsvAdapter:
             and employer_taxes == ZERO
             and employee_benefits == ZERO
             and employer_benefits > ZERO
-            and abs(gross_wages - employer_benefits) <= Decimal("0.01")
+            and abs(gross_wages - employer_benefits) <= Money(1)
         )
         raw_payload: dict[str, Any] = {
             "rows": rows,
@@ -425,7 +425,7 @@ class GustoPayrollCsvAdapter:
             employee_benefits=employee_benefits,
             employer_benefits=employer_benefits,
             net_pay=net_pay,
-            tax_breakdown={k: fmt_decimal(v) for k, v in sorted(tax_breakdown.items())},
+            tax_breakdown={k: format_money(v) for k, v in sorted(tax_breakdown.items())},
             employee_count=len(rows),
             raw=raw_payload,
         )
@@ -460,19 +460,19 @@ class GustoPayrollCsvAdapter:
                 return row[alias]
         return ""
 
-    def _get_decimal(self, row: dict[str, str], canonical: str) -> Decimal:
+    def _get_money(self, row: dict[str, str], canonical: str) -> Money:
         val = self._get_field(row, canonical)
-        return to_decimal(val, ZERO) if val else ZERO
+        return parse_money(val, ZERO) if val else ZERO
 
-    def _get_decimal_or_none(self, row: dict[str, str], canonical: str) -> Decimal | None:
+    def _get_money_or_none(self, row: dict[str, str], canonical: str) -> Money | None:
         val = self._get_field(row, canonical)
-        return to_decimal(val, ZERO) if val else None
+        return parse_money(val, ZERO) if val else None
 
     @staticmethod
-    def _first_decimal(row: dict[str, str], aliases: tuple[str, ...]) -> Decimal:
+    def _first_money(row: dict[str, str], aliases: tuple[str, ...]) -> Money:
         for alias in aliases:
             if row.get(alias):
-                return to_decimal(row[alias], ZERO)
+                return parse_money(row[alias], ZERO)
         return ZERO
 
     def _is_summary_row(self, row: dict[str, str]) -> bool:
@@ -501,14 +501,14 @@ class GustoPayrollCsvAdapter:
         pp_start: str,
         pp_end: str,
         run_type: str,
-        gross: Decimal,
-        emp_tax: Decimal,
-        er_tax: Decimal,
-        net_pay: Decimal,
+        gross: Money,
+        emp_tax: Money,
+        er_tax: Money,
+        net_pay: Money,
     ) -> str:
         payload = (
             f"gusto|{run_type}|{check_date}|{pp_start}|{pp_end}|"
-            f"{fmt_decimal(gross)}|{fmt_decimal(emp_tax)}|"
-            f"{fmt_decimal(er_tax)}|{fmt_decimal(net_pay)}"
+            f"{format_money(gross)}|{format_money(emp_tax)}|"
+            f"{format_money(er_tax)}|{format_money(net_pay)}"
         )
         return hashlib.sha256(payload.encode("utf-8")).hexdigest()

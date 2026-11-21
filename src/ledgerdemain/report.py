@@ -3,12 +3,11 @@
 from __future__ import annotations
 
 from collections import defaultdict
-from decimal import Decimal
 from typing import Any
 
 from ledgerdemain.config import AppConfig
 from ledgerdemain.db import LedgerDB
-from ledgerdemain.models import ZERO, fmt_decimal
+from ledgerdemain.money import ZERO, Money, format_money
 
 
 def build_report(
@@ -33,9 +32,9 @@ def build_report(
     overview = {
         src: {
             "count": info["count"],
-            "deposits": fmt_decimal(info["deposits"]),
-            "withdrawals": fmt_decimal(info["withdrawals"]),
-            "net": fmt_decimal(info["deposits"] - info["withdrawals"]),
+            "deposits": format_money(info["deposits"]),
+            "withdrawals": format_money(info["withdrawals"]),
+            "net": format_money(info["deposits"] - info["withdrawals"]),
         }
         for src, info in sorted(by_source.items())
     }
@@ -59,8 +58,8 @@ def build_report(
             "invoice_number": inv.invoice_number,
             "client_name": inv.client_name,
             "issue_date": inv.issue_date,
-            "total_amount": fmt_decimal(inv.total_amount),
-            "due_amount": fmt_decimal(inv.due_amount),
+            "total_amount": format_money(inv.total_amount),
+            "due_amount": format_money(inv.due_amount),
             "state": inv.state,
         }
         for inv in invoices
@@ -69,7 +68,7 @@ def build_report(
 
     # Gusto payroll & clearing liability balances
     runs = db.list_gusto_payroll_runs(period_prefix=period)
-    payroll_totals: dict[str, Decimal] = defaultdict(lambda: ZERO)
+    payroll_totals: dict[str, Money] = defaultdict(lambda: ZERO)
     contractor_total = ZERO
     for run in runs:
         if run.run_type == "contractor":
@@ -103,7 +102,7 @@ def build_report(
             "date": stx.tx_date,
             "source_account": stx.anchor_account_key,
             "direction": stx.anchor_direction,
-            "amount": fmt_decimal(stx.anchor_amount),
+            "amount": format_money(stx.anchor_amount),
             "description": stx.description,
             "reason": stx.review_reason,
         }
@@ -115,7 +114,7 @@ def build_report(
         {
             "staged_tx_id": stx.id,
             "date": stx.tx_date,
-            "amount": fmt_decimal(stx.anchor_amount),
+            "amount": format_money(stx.anchor_amount),
             "description": stx.description,
             "reason": stx.review_reason or stx.notes,
         }
@@ -133,7 +132,7 @@ def build_report(
             "staged_tx_id": stx.id,
             "date": stx.tx_date,
             "status": stx.status,
-            "amount": fmt_decimal(stx.anchor_amount),
+            "amount": format_money(stx.anchor_amount),
             "description": stx.description,
             "reason": stx.last_error or stx.review_reason,
         }
@@ -146,23 +145,23 @@ def build_report(
         "overview": overview,
         "harvest_ar": {
             "invoice_count": len([i for i in invoices if i.state != "draft"]),
-            "total_invoiced": fmt_decimal(total_invoiced),
-            "total_due": fmt_decimal(total_due),
-            "matched_deposits": fmt_decimal(matched_deposit_total),
+            "total_invoiced": format_money(total_invoiced),
+            "total_due": format_money(total_due),
+            "matched_deposits": format_money(matched_deposit_total),
             "unmatched_invoices": unmatched_invoices,
         },
         "gusto_payroll": {
             "run_count": len(runs),
-            "gross_wages": fmt_decimal(payroll_totals["gross_wages"]),
-            "reimbursements": fmt_decimal(payroll_totals["reimbursements"]),
-            "employee_taxes": fmt_decimal(payroll_totals["employee_taxes"]),
-            "employer_taxes": fmt_decimal(payroll_totals["employer_taxes"]),
-            "employee_benefits": fmt_decimal(payroll_totals["employee_benefits"]),
-            "employer_benefits": fmt_decimal(payroll_totals["employer_benefits"]),
-            "net_pay": fmt_decimal(payroll_totals["net_pay"]),
-            "contractor_payouts": fmt_decimal(contractor_total),
-            "payroll_taxes_payable_net": fmt_decimal(tax_payable_net),
-            "payroll_benefits_payable_net": fmt_decimal(benefits_payable_net),
+            "gross_wages": format_money(payroll_totals["gross_wages"]),
+            "reimbursements": format_money(payroll_totals["reimbursements"]),
+            "employee_taxes": format_money(payroll_totals["employee_taxes"]),
+            "employer_taxes": format_money(payroll_totals["employer_taxes"]),
+            "employee_benefits": format_money(payroll_totals["employee_benefits"]),
+            "employer_benefits": format_money(payroll_totals["employer_benefits"]),
+            "net_pay": format_money(payroll_totals["net_pay"]),
+            "contractor_payouts": format_money(contractor_total),
+            "payroll_taxes_payable_net": format_money(tax_payable_net),
+            "payroll_benefits_payable_net": format_money(benefits_payable_net),
         },
         "wave_manual_checklist": {
             "transfers": manual_transfers,

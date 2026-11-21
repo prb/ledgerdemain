@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import csv
-from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
@@ -11,13 +10,12 @@ from ledgerdemain.adapters.base import parse_flexible_date
 from ledgerdemain.config import ConfigError, HarvestConfig
 from ledgerdemain.http_client import HttpClient
 from ledgerdemain.models import (
-    ZERO,
     HarvestClient,
     HarvestInvoice,
     HarvestInvoiceLineItem,
     HarvestPayment,
-    to_decimal,
 )
+from ledgerdemain.money import ZERO, parse_money
 
 
 class HarvestApiAdapter:
@@ -121,7 +119,7 @@ class HarvestApiAdapter:
                         harvest_id=str(item["id"]),
                         invoice_harvest_id=str(invoice_id),
                         paid_date=paid_date,
-                        amount=to_decimal(item.get("amount"), ZERO),
+                        amount=parse_money(item.get("amount"), ZERO),
                         payment_gateway=gateway_name,
                         notes=str(item.get("notes") or ""),
                         raw=dict(item),
@@ -136,25 +134,26 @@ class HarvestApiAdapter:
     @staticmethod
     def _parse_api_invoice(item: dict[str, Any]) -> HarvestInvoice:
         client = item.get("client") or {}
-        total_amount = to_decimal(item.get("amount"), ZERO)
-        tax1 = to_decimal(item.get("tax_amount"), ZERO)
-        tax2 = to_decimal(item.get("tax2_amount"), ZERO)
+        total_amount = parse_money(item.get("amount"), ZERO)
+        tax1 = parse_money(item.get("tax_amount"), ZERO)
+        tax2 = parse_money(item.get("tax2_amount"), ZERO)
         tax_amount = tax1 + tax2
         subtotal = (
-            to_decimal(item.get("subtotal"))
+            parse_money(item.get("subtotal"))
             if item.get("subtotal") is not None
             else (total_amount - tax_amount)
         )
-        due_amount = to_decimal(item.get("due_amount"), ZERO)
+        due_amount = parse_money(item.get("due_amount"), ZERO)
 
         paid_raw = item.get("paid_date") or item.get("paid_at")
         paid_date = parse_flexible_date(str(paid_raw)) if paid_raw else None
 
         line_items: list[HarvestInvoiceLineItem] = []
         for li in item.get("line_items") or []:
-            qty = Decimal(str(li.get("quantity", "1")))
-            unit_price = to_decimal(li.get("unit_price"), ZERO)
-            li_amount = to_decimal(li.get("amount"), ZERO)
+            raw_qty = li.get("quantity", "1")
+            qty = (str(raw_qty).strip() if raw_qty is not None else "") or "1"
+            unit_price = parse_money(li.get("unit_price"), ZERO)
+            li_amount = parse_money(li.get("amount"), ZERO)
             line_items.append(
                 HarvestInvoiceLineItem(
                     kind=str(li.get("kind") or "Service"),
@@ -227,12 +226,12 @@ class HarvestCsvAdapter:
                     or norm_row.get("invoice amount")
                     or "0.00"
                 )
-                total_amount = to_decimal(total_raw, ZERO)
-                tax_amount = to_decimal(
+                total_amount = parse_money(total_raw, ZERO)
+                tax_amount = parse_money(
                     norm_row.get("tax") or norm_row.get("tax amount") or "0.00", ZERO
                 )
                 subtotal = (
-                    to_decimal(norm_row["subtotal"], ZERO)
+                    parse_money(norm_row["subtotal"], ZERO)
                     if norm_row.get("subtotal")
                     else (total_amount - tax_amount)
                 )
@@ -242,7 +241,7 @@ class HarvestCsvAdapter:
                     or norm_row.get("amount due")
                 )
                 if due_raw_amt:
-                    due_amount = to_decimal(due_raw_amt, ZERO)
+                    due_amount = parse_money(due_raw_amt, ZERO)
                 else:
                     due_amount = ZERO if state == "paid" else total_amount
 
@@ -252,7 +251,7 @@ class HarvestCsvAdapter:
                     HarvestInvoiceLineItem(
                         kind="Service",
                         description=subject,
-                        quantity=Decimal("1"),
+                        quantity="1",
                         unit_price=subtotal,
                         amount=subtotal,
                         taxed=tax_amount > ZERO,

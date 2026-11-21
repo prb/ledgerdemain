@@ -4,14 +4,12 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
-from decimal import Decimal
 from typing import Any
 
 from ledgerdemain.categorize import Categorizer
 from ledgerdemain.config import AppConfig
 from ledgerdemain.db import LedgerDB
 from ledgerdemain.models import (
-    ZERO,
     BankTransaction,
     GustoPayrollRun,
     HarvestInvoice,
@@ -19,8 +17,8 @@ from ledgerdemain.models import (
     StagedInvoice,
     StagedLineItem,
     StagedTransaction,
-    fmt_decimal,
 )
+from ledgerdemain.money import ZERO, Money, format_money
 
 
 class BalanceError(ValueError):
@@ -63,7 +61,7 @@ DEFAULT_NORMAL_BALANCE: dict[str, str] = {
 def validate_double_entry_balance(
     anchor_account_key: str,
     anchor_direction: str,
-    anchor_amount: Decimal,
+    anchor_amount: Money,
     line_items: list[StagedLineItem],
     normal_balance_lookup: Callable[[str], str],
     anchor_wave_account_id: str | None = None,
@@ -103,9 +101,9 @@ def validate_double_entry_balance(
     imbalance = net_debit - expected_net_debit
     if imbalance != ZERO:
         raise BalanceError(
-            f"Double-entry imbalance of {fmt_decimal(imbalance)}: "
-            f"expected line items net debit {fmt_decimal(expected_net_debit)} "
-            f"for {anchor_direction} {fmt_decimal(anchor_amount)}, got {fmt_decimal(net_debit)}"
+            f"Double-entry imbalance of {format_money(imbalance)}: "
+            f"expected line items net debit {format_money(expected_net_debit)} "
+            f"for {anchor_direction} {format_money(anchor_amount)}, got {format_money(net_debit)}"
         )
 
 
@@ -198,8 +196,8 @@ class Planner:
                         "description": li.description
                         or li.kind
                         or f"Invoice #{inv.invoice_number}",
-                        "quantity": str(li.quantity),
-                        "unitPrice": fmt_decimal(li.unit_price),
+                        "quantity": li.quantity,
+                        "unitPrice": format_money(li.unit_price),
                     }
                 )
         else:
@@ -207,7 +205,7 @@ class Planner:
                 {
                     "description": inv.subject or f"Harvest Invoice #{inv.invoice_number}",
                     "quantity": "1",
-                    "unitPrice": fmt_decimal(inv.subtotal),
+                    "unitPrice": format_money(inv.subtotal),
                 }
             )
 
@@ -340,7 +338,7 @@ class Planner:
                 status="manual_transfer_required",
                 review_reason=(
                     f"Record as Transfer in Wave UI ({from_acct} -> {to_acct}, "
-                    f"${fmt_decimal(tx.amount)}, paired with bank_tx #{other_id})"
+                    f"${format_money(tx.amount)}, paired with bank_tx #{other_id})"
                 ),
             )
 
@@ -629,7 +627,7 @@ class Planner:
         )
 
     def _make_line(
-        self, account_key: str, amount: Decimal, balance: str, description: str
+        self, account_key: str, amount: Money, balance: str, description: str
     ) -> StagedLineItem:
         return StagedLineItem(
             account_key=account_key,
@@ -699,10 +697,10 @@ class Planner:
             f"Gusto {match_type} check_date={run.check_date}",
             f"period={run.pay_period_start}..{run.pay_period_end}",
             f"employees={run.employee_count}",
-            f"gross={fmt_decimal(run.gross_wages)}",
-            f"reimb={fmt_decimal(run.reimbursements)}",
-            f"ee_tax={fmt_decimal(run.employee_taxes)}",
-            f"er_tax={fmt_decimal(run.employer_taxes)}",
+            f"gross={format_money(run.gross_wages)}",
+            f"reimb={format_money(run.reimbursements)}",
+            f"ee_tax={format_money(run.employee_taxes)}",
+            f"er_tax={format_money(run.employer_taxes)}",
         ]
         if run.tax_breakdown:
             tax_items = ", ".join(f"{k}={v}" for k, v in sorted(run.tax_breakdown.items()))

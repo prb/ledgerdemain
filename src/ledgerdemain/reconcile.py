@@ -5,18 +5,16 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from datetime import date
-from decimal import Decimal
 
 from ledgerdemain.config import AppConfig
 from ledgerdemain.db import LedgerDB
 from ledgerdemain.models import (
-    ZERO,
     BankTransaction,
     HarvestInvoice,
     HarvestPayment,
     ReconciliationMatch,
-    fmt_decimal,
 )
+from ledgerdemain.money import ZERO, Money, format_money
 
 _PROCESSOR_TOKENS = ("STRIPE", "PAYPAL", "SQUARE", "HARVEST", "ACH", "WIRE")
 _BANK_TRANSFER_KEYWORDS = ("TRANSFER", "XFER", "SWEEP", "SAVINGS", "MONEY MARKET", "INTERNAL")
@@ -182,7 +180,7 @@ class Reconciler:
                     matched_amount=gh_tx.amount,
                     confidence=0.98,
                     reason=(
-                        f"Exact CC payment transfer match ${fmt_decimal(gh_tx.amount)} "
+                        f"Exact CC payment transfer match ${format_money(gh_tx.amount)} "
                         f"({diff}d apart: GH {gh_tx.posted_date} <-> CO {best_co.posted_date})"
                     ),
                 ),
@@ -251,7 +249,7 @@ class Reconciler:
                     confidence=conf,
                     reason=(
                         f"Internal bank transfer {w_tx.account_key} -> {best_dep.account_key} "
-                        f"${fmt_decimal(w_tx.amount)} ({diff}d apart)"
+                        f"${format_money(w_tx.amount)} ({diff}d apart)"
                     ),
                 ),
                 confirm_high_confidence,
@@ -380,8 +378,8 @@ class Reconciler:
                             confidence=conf,
                             reason=(
                                 f"Gusto payroll tax debit check_date={run.check_date} "
-                                f"(EE={fmt_decimal(run.employee_taxes)}, "
-                                f"ER={fmt_decimal(run.employer_taxes)})"
+                                f"(EE={format_money(run.employee_taxes)}, "
+                                f"ER={format_money(run.employer_taxes)})"
                             ),
                         ),
                         confirm_high_confidence,
@@ -469,7 +467,7 @@ class Reconciler:
     @staticmethod
     def _pick_gusto_candidate(
         candidates: list[BankTransaction],
-        target_amount: Decimal,
+        target_amount: Money,
         check_date: str,
         keywords: tuple[str, ...],
         match_type: str,
@@ -673,7 +671,7 @@ class Reconciler:
             if tx.id in claimed_tx_ids:
                 continue
             is_processor = any(tok in tx.normalized_description for tok in _PROCESSOR_TOKENS)
-            fee_candidates: list[tuple[int, Decimal, HarvestInvoice]] = []
+            fee_candidates: list[tuple[int, Money, HarvestInvoice]] = []
             for inv in invoices:
                 assert inv.id is not None
                 if inv.id in claimed_invoice_ids:
@@ -681,10 +679,8 @@ class Reconciler:
                 if inv.total_amount <= tx.amount:
                     continue
                 fee = inv.total_amount - tx.amount
-                min_fee = (inv.total_amount * Decimal("0.001")).quantize(Decimal("0.01"))
-                max_fee = (inv.total_amount * Decimal("0.04") + Decimal("0.35")).quantize(
-                    Decimal("0.01")
-                )
+                min_fee = inv.total_amount.mul_ratio(1, 1000)
+                max_fee = inv.total_amount.mul_ratio(4, 100) + Money(35)
                 if not (min_fee <= fee <= max_fee):
                     continue
                 if not self._invoice_within_deposit_window(inv, tx.posted_date, window):
@@ -711,7 +707,7 @@ class Reconciler:
                         reason=(
                             "Possible net-of-fee payment for Harvest Inv "
                             f"#{best_inv.invoice_number} "
-                            f"({best_inv.client_name}; fee=${fmt_decimal(fee)})"
+                            f"({best_inv.client_name}; fee=${format_money(fee)})"
                         ),
                     ),
                     confirm_high_confidence,
@@ -735,7 +731,7 @@ class Reconciler:
 
     @staticmethod
     def _find_batch_subset(
-        target: Decimal, client_groups: dict[str, list[HarvestInvoice]]
+        target: Money, client_groups: dict[str, list[HarvestInvoice]]
     ) -> list[HarvestInvoice] | None:
         from itertools import combinations
 

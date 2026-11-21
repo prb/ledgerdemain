@@ -7,12 +7,12 @@ import re
 import xml.etree.ElementTree as ET
 from collections import defaultdict
 from dataclasses import dataclass, field
-from decimal import Decimal
 from pathlib import Path
 
 from ledgerdemain.adapters.base import normalize_description, parse_flexible_date
 from ledgerdemain.db import make_bank_fingerprint
-from ledgerdemain.models import ZERO, BankTransaction, to_decimal
+from ledgerdemain.models import BankTransaction
+from ledgerdemain.money import ZERO, Money, parse_money
 
 _STMTTRN_RE = re.compile(
     r"<STMTTRN>(.*?)(?:</STMTTRN>|(?=<STMTTRN>|</BANKTRANLIST>))", re.DOTALL | re.IGNORECASE
@@ -51,9 +51,9 @@ class OfxStatement:
     currency: str = "USD"
     start_date: str | None = None
     end_date: str | None = None
-    ledger_balance: Decimal | None = None
+    ledger_balance: Money | None = None
     ledger_balance_as_of: str | None = None
-    available_balance: Decimal | None = None
+    available_balance: Money | None = None
     transactions: list[BankTransaction] = field(default_factory=list)
 
 
@@ -96,7 +96,7 @@ class OfxTransactionParser:
                 continue
             tx_date = _parse_ofx_date(entry.get("DTUSER", "")) or posted_date
 
-            signed_amount = to_decimal(trnamt_raw)
+            signed_amount = parse_money(trnamt_raw)
             if signed_amount == ZERO:
                 continue
 
@@ -153,9 +153,9 @@ class OfxTransactionParser:
             currency=meta.get("CURDEF", "USD").strip() or "USD",
             start_date=_parse_ofx_date(meta.get("DTSTART", "")),
             end_date=_parse_ofx_date(meta.get("DTEND", "")),
-            ledger_balance=to_decimal(ledger_raw) if ledger_raw else None,
+            ledger_balance=parse_money(ledger_raw) if ledger_raw else None,
             ledger_balance_as_of=_parse_ofx_date(meta.get("LEDGER_DTASOF", "")),
-            available_balance=to_decimal(avail_raw) if avail_raw else None,
+            available_balance=parse_money(avail_raw) if avail_raw else None,
             transactions=transactions,
         )
 

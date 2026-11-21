@@ -5,7 +5,6 @@ from __future__ import annotations
 import contextlib
 import io
 import json
-from decimal import Decimal
 from pathlib import Path
 
 import pytest
@@ -21,7 +20,8 @@ from ledgerdemain.config import (
 )
 from ledgerdemain.db import LedgerDB
 from ledgerdemain.http_client import HttpClient, HttpResponse
-from ledgerdemain.models import ZERO, BankTransaction, HarvestInvoice
+from ledgerdemain.models import BankTransaction, HarvestInvoice
+from ledgerdemain.money import ZERO, Money
 from ledgerdemain.planner import Planner
 from ledgerdemain.reconcile import Reconciler
 from ledgerdemain.wave.client import WaveGraphQLClient
@@ -289,17 +289,17 @@ def test_grasshopper_live_narmi_schema_cents_settled_at_and_links_pagination() -
     assert txs[0].external_id == "tx-synth-1"
     assert txs[0].posted_date == "2026-11-09"
     assert txs[0].tx_date == "2026-11-08"
-    assert txs[0].amount == Decimal("211.82")
+    assert txs[0].amount == Money.parse("211.82")
     assert txs[0].direction == "WITHDRAWAL"
     assert txs[0].description == "SYNTHETIC CARD ONLINE PMT"
 
     assert txs[1].external_id == "tx-synth-2"
-    assert txs[1].amount == Decimal("19000.00")
+    assert txs[1].amount == Money.parse("19000.00")
     assert txs[1].direction == "DEPOSIT"
 
     assert txs[2].external_id == "tx-synth-pending"
     assert txs[2].posted_date == "2026-11-12"
-    assert txs[2].amount == Decimal("4.50")
+    assert txs[2].amount == Money.parse("4.50")
     assert txs[2].direction == "DEPOSIT"
 
 
@@ -405,10 +405,10 @@ account_key = "interest_income"
                         None,
                         "open",
                         "USD",
-                        Decimal("2500.00"),
+                        Money.parse("2500.00"),
                         ZERO,
-                        Decimal("2500.00"),
-                        Decimal("2500.00"),
+                        Money.parse("2500.00"),
+                        Money.parse("2500.00"),
                     ),
                     HarvestInvoice(
                         "inv-2",
@@ -420,10 +420,10 @@ account_key = "interest_income"
                         None,
                         "open",
                         "USD",
-                        Decimal("42.15"),
+                        Money.parse("42.15"),
                         ZERO,
-                        Decimal("42.15"),
-                        Decimal("42.15"),
+                        Money.parse("42.15"),
+                        Money.parse("42.15"),
                     ),
                 ]
             )
@@ -438,7 +438,7 @@ account_key = "interest_income"
                         posted_date="2026-11-05",
                         description="INTERNAL TRANSFER TO MM",
                         normalized_description="INTERNAL TRANSFER TO MM",
-                        amount=Decimal("2500.00"),
+                        amount=Money.parse("2500.00"),
                         direction="WITHDRAWAL",
                     ),
                     BankTransaction(
@@ -450,7 +450,7 @@ account_key = "interest_income"
                         posted_date="2026-11-05",
                         description="INTERNAL TRANSFER FROM SAV",
                         normalized_description="INTERNAL TRANSFER FROM SAV",
-                        amount=Decimal("2500.00"),
+                        amount=Money.parse("2500.00"),
                         direction="DEPOSIT",
                     ),
                     BankTransaction(
@@ -462,7 +462,7 @@ account_key = "interest_income"
                         posted_date="2026-11-10",
                         description="Interest Payment",
                         normalized_description="INTEREST PAYMENT",
-                        amount=Decimal("42.15"),
+                        amount=Money.parse("42.15"),
                         direction="DEPOSIT",
                     ),
                 ]
@@ -474,7 +474,7 @@ account_key = "interest_income"
 
             Planner(db, cfg, Categorizer(rules)).build_plan()
             staged = db.list_staged_transactions()
-            xfer_legs = [t for t in staged if t.anchor_amount == Decimal("2500.00")]
+            xfer_legs = [t for t in staged if t.anchor_amount == Money.parse("2500.00")]
             assert len(xfer_legs) == 2
             assert all(t.status == expected_status for t in xfer_legs)
             if strat == "manual_transfer":
@@ -487,7 +487,7 @@ account_key = "interest_income"
                 assert xfer_legs[1].line_items[0].account_key == "bank_transfer_clearing"
                 assert xfer_legs[1].line_items[0].balance == "DECREASE"
 
-            interest_tx = next(t for t in staged if t.anchor_amount == Decimal("42.15"))
+            interest_tx = next(t for t in staged if t.anchor_amount == Money.parse("42.15"))
             assert interest_tx.status == "staged"
             assert interest_tx.line_items[0].account_key == "interest_income"
             assert interest_tx.line_items[0].balance == "INCREASE"

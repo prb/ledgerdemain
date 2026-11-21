@@ -6,7 +6,6 @@ import hashlib
 import json
 import sqlite3
 from datetime import UTC, datetime
-from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
@@ -24,9 +23,8 @@ from ledgerdemain.models import (
     WaveAccount,
     WaveCustomer,
     WaveProduct,
-    fmt_decimal,
-    to_decimal,
 )
+from ledgerdemain.money import Money, format_money, parse_money
 
 SCHEMA_VERSION = 1
 
@@ -42,7 +40,7 @@ def make_bank_fingerprint(
     external_id: str | None,
     posted_date: str,
     direction: str,
-    amount: Decimal,
+    amount: Money,
     normalized_description: str,
     occurrence_index: int = 0,
 ) -> str:
@@ -52,7 +50,7 @@ def make_bank_fingerprint(
     else:
         raw = (
             f"{source}|{account_key}|{posted_date}|{direction}|"
-            f"{fmt_decimal(amount)}|{normalized_description}|{occurrence_index}"
+            f"{format_money(amount)}|{normalized_description}|{occurrence_index}"
         )
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
@@ -386,7 +384,7 @@ class LedgerDB:
                         tx.posted_date,
                         tx.description,
                         tx.normalized_description,
-                        fmt_decimal(tx.amount),
+                        format_money(tx.amount),
                         tx.direction,
                         tx.source_category,
                         tx.card_last4,
@@ -411,7 +409,7 @@ class LedgerDB:
             posted_date=str(row["posted_date"]),
             description=str(row["description"]),
             normalized_description=str(row["normalized_description"]),
-            amount=to_decimal(row["amount"]),
+            amount=parse_money(row["amount"]),
             direction=str(row["direction"]),
             source_category=str(row["source_category"]),
             card_last4=str(row["card_last4"]),
@@ -525,10 +523,10 @@ class LedgerDB:
                         inv.paid_date,
                         inv.state,
                         inv.currency,
-                        fmt_decimal(inv.subtotal),
-                        fmt_decimal(inv.tax_amount),
-                        fmt_decimal(inv.total_amount),
-                        fmt_decimal(inv.due_amount),
+                        format_money(inv.subtotal),
+                        format_money(inv.tax_amount),
+                        format_money(inv.total_amount),
+                        format_money(inv.due_amount),
                         inv.subject,
                         line_items_json,
                         json.dumps(inv.raw, sort_keys=True),
@@ -561,7 +559,7 @@ class LedgerDB:
                         pay.harvest_id,
                         pay.invoice_harvest_id,
                         pay.paid_date,
-                        fmt_decimal(pay.amount),
+                        format_money(pay.amount),
                         pay.payment_gateway,
                         pay.notes,
                         json.dumps(pay.raw, sort_keys=True),
@@ -584,10 +582,10 @@ class LedgerDB:
             paid_date=row["paid_date"],
             state=str(row["state"]),
             currency=str(row["currency"]),
-            subtotal=to_decimal(row["subtotal"]),
-            tax_amount=to_decimal(row["tax_amount"]),
-            total_amount=to_decimal(row["total_amount"]),
-            due_amount=to_decimal(row["due_amount"]),
+            subtotal=parse_money(row["subtotal"]),
+            tax_amount=parse_money(row["tax_amount"]),
+            total_amount=parse_money(row["total_amount"]),
+            due_amount=parse_money(row["due_amount"]),
             subject=str(row["subject"]),
             line_items=[HarvestInvoiceLineItem.from_dict(item) for item in items_raw],
             raw=json.loads(row["raw_json"]),
@@ -628,7 +626,7 @@ class LedgerDB:
                 harvest_id=str(row["harvest_id"]),
                 invoice_harvest_id=str(row["invoice_harvest_id"]),
                 paid_date=str(row["paid_date"]),
-                amount=to_decimal(row["amount"]),
+                amount=parse_money(row["amount"]),
                 payment_gateway=str(row["payment_gateway"]),
                 notes=str(row["notes"]),
                 raw=json.loads(row["raw_json"]),
@@ -664,13 +662,13 @@ class LedgerDB:
                         run.pay_period_start,
                         run.pay_period_end,
                         run.run_type,
-                        fmt_decimal(run.gross_wages),
-                        fmt_decimal(run.reimbursements),
-                        fmt_decimal(run.employee_taxes),
-                        fmt_decimal(run.employer_taxes),
-                        fmt_decimal(run.employee_benefits),
-                        fmt_decimal(run.employer_benefits),
-                        fmt_decimal(run.net_pay),
+                        format_money(run.gross_wages),
+                        format_money(run.reimbursements),
+                        format_money(run.employee_taxes),
+                        format_money(run.employer_taxes),
+                        format_money(run.employee_benefits),
+                        format_money(run.employer_benefits),
+                        format_money(run.net_pay),
                         json.dumps(run.tax_breakdown, sort_keys=True),
                         run.employee_count,
                         json.dumps(run.raw, sort_keys=True),
@@ -690,13 +688,13 @@ class LedgerDB:
             pay_period_start=str(row["pay_period_start"]),
             pay_period_end=str(row["pay_period_end"]),
             run_type=str(row["run_type"]),
-            gross_wages=to_decimal(row["gross_wages"]),
-            reimbursements=to_decimal(row["reimbursements"]),
-            employee_taxes=to_decimal(row["employee_taxes"]),
-            employer_taxes=to_decimal(row["employer_taxes"]),
-            employee_benefits=to_decimal(row["employee_benefits"]),
-            employer_benefits=to_decimal(row["employer_benefits"]),
-            net_pay=to_decimal(row["net_pay"]),
+            gross_wages=parse_money(row["gross_wages"]),
+            reimbursements=parse_money(row["reimbursements"]),
+            employee_taxes=parse_money(row["employee_taxes"]),
+            employer_taxes=parse_money(row["employer_taxes"]),
+            employee_benefits=parse_money(row["employee_benefits"]),
+            employer_benefits=parse_money(row["employer_benefits"]),
+            net_pay=parse_money(row["net_pay"]),
             tax_breakdown=json.loads(row["tax_breakdown_json"]),
             employee_count=int(row["employee_count"]),
             raw=json.loads(row["raw_json"]),
@@ -768,7 +766,7 @@ class LedgerDB:
                     WHERE id = ?
                     """,
                     (
-                        fmt_decimal(match.matched_amount),
+                        format_money(match.matched_amount),
                         match.confidence,
                         match.reason,
                         new_status,
@@ -794,7 +792,7 @@ class LedgerDB:
                     match.harvest_invoice_id,
                     match.harvest_payment_id,
                     match.gusto_run_id,
-                    fmt_decimal(match.matched_amount),
+                    format_money(match.matched_amount),
                     match.confidence,
                     match.reason,
                     match.status,
@@ -823,7 +821,7 @@ class LedgerDB:
                 int(row["harvest_payment_id"]) if row["harvest_payment_id"] is not None else None
             ),
             gusto_run_id=(int(row["gusto_run_id"]) if row["gusto_run_id"] is not None else None),
-            matched_amount=to_decimal(row["matched_amount"]),
+            matched_amount=parse_money(row["matched_amount"]),
             confidence=float(row["confidence"]),
             reason=str(row["reason"]),
             status=str(row["status"]),
@@ -931,7 +929,7 @@ class LedgerDB:
                     (
                         prod.wave_id,
                         prod.name,
-                        fmt_decimal(prod.unit_price),
+                        format_money(prod.unit_price),
                         prod.income_account_id,
                         now,
                     ),
@@ -1000,7 +998,7 @@ class LedgerDB:
         return WaveProduct(
             wave_id=str(row["wave_id"]),
             name=str(row["name"]),
-            unit_price=to_decimal(row["unit_price"]),
+            unit_price=parse_money(row["unit_price"]),
             income_account_id=str(row["income_account_id"]),
         )
 
@@ -1044,7 +1042,7 @@ class LedgerDB:
                         tx.notes,
                         tx.anchor_account_key,
                         tx.anchor_wave_account_id,
-                        fmt_decimal(tx.anchor_amount),
+                        format_money(tx.anchor_amount),
                         tx.anchor_direction,
                         line_items_json,
                         tx.category_rule,
@@ -1074,7 +1072,7 @@ class LedgerDB:
                     tx.notes,
                     tx.anchor_account_key,
                     tx.anchor_wave_account_id,
-                    fmt_decimal(tx.anchor_amount),
+                    format_money(tx.anchor_amount),
                     tx.anchor_direction,
                     line_items_json,
                     tx.category_rule,
@@ -1121,7 +1119,7 @@ class LedgerDB:
                         inv.due_date,
                         inv.wave_status,
                         items_json,
-                        fmt_decimal(inv.total_amount),
+                        format_money(inv.total_amount),
                         inv.status,
                         now,
                         existing_id,
@@ -1149,7 +1147,7 @@ class LedgerDB:
                     inv.due_date,
                     inv.wave_status,
                     items_json,
-                    fmt_decimal(inv.total_amount),
+                    format_money(inv.total_amount),
                     inv.status,
                     inv.wave_invoice_id,
                     inv.last_error,
@@ -1172,7 +1170,7 @@ class LedgerDB:
             notes=str(row["notes"]),
             anchor_account_key=str(row["anchor_account_key"]),
             anchor_wave_account_id=row["anchor_wave_account_id"],
-            anchor_amount=to_decimal(row["anchor_amount"]),
+            anchor_amount=parse_money(row["anchor_amount"]),
             anchor_direction=str(row["anchor_direction"]),
             line_items=[StagedLineItem.from_dict(item) for item in items_raw],
             category_rule=str(row["category_rule"]),
@@ -1195,7 +1193,7 @@ class LedgerDB:
             due_date=str(row["due_date"]),
             wave_status=str(row["wave_status"]),
             items=json.loads(row["items_json"]),
-            total_amount=to_decimal(row["total_amount"]),
+            total_amount=parse_money(row["total_amount"]),
             status=str(row["status"]),
             wave_invoice_id=row["wave_invoice_id"],
             last_error=row["last_error"],

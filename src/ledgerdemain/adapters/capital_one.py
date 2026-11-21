@@ -11,7 +11,8 @@ from pathlib import Path
 from ledgerdemain.adapters.base import normalize_description, parse_flexible_date
 from ledgerdemain.adapters.ofx import OfxTransactionParser
 from ledgerdemain.db import make_bank_fingerprint
-from ledgerdemain.models import ZERO, BankTransaction, to_decimal
+from ledgerdemain.models import BankTransaction
+from ledgerdemain.money import ZERO, parse_money
 from ledgerdemain.pdf_extract import extract_pdf_text
 
 _PERIOD_MONTH_NAME_RE = re.compile(
@@ -84,8 +85,8 @@ class CapitalOneCsvAdapter:
 
                 debit_raw = row.get("debit") or ""
                 credit_raw = row.get("credit") or ""
-                debit_amt = abs(to_decimal(debit_raw, ZERO)) if debit_raw else ZERO
-                credit_amt = abs(to_decimal(credit_raw, ZERO)) if credit_raw else ZERO
+                debit_amt = abs(parse_money(debit_raw, ZERO)) if debit_raw else ZERO
+                credit_amt = abs(parse_money(credit_raw, ZERO)) if credit_raw else ZERO
 
                 if debit_amt > ZERO:
                     direction = "WITHDRAWAL"
@@ -97,7 +98,7 @@ class CapitalOneCsvAdapter:
                     amt_raw = row.get("amount") or ""
                     if not amt_raw:
                         continue
-                    signed = to_decimal(amt_raw, ZERO)
+                    signed = parse_money(amt_raw, ZERO)
                     if signed == ZERO:
                         continue
                     direction = "WITHDRAWAL" if signed > ZERO else "DEPOSIT"
@@ -205,7 +206,7 @@ class CapitalOnePdfAdapter:
 
             explicit_credit = amt_str.startswith("-") or amt_str.upper().endswith("CR")
             clean_amt = re.sub(r"CR$", "", amt_str, flags=re.IGNORECASE).strip()
-            amount = abs(to_decimal(clean_amt))
+            amount = abs(parse_money(clean_amt))
             if amount == ZERO:
                 continue
 

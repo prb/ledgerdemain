@@ -5,8 +5,10 @@ from __future__ import annotations
 import json
 import urllib.parse
 from collections.abc import Callable
-from decimal import Decimal
 from pathlib import Path
+from typing import Any
+
+import pytest
 
 from ledgerdemain.adapters.base import normalize_description
 from ledgerdemain.adapters.capital_one import CapitalOneCsvAdapter, CapitalOnePdfAdapter
@@ -18,7 +20,8 @@ from ledgerdemain.categorize import Categorizer
 from ledgerdemain.config import GrasshopperConfig, HarvestConfig
 from ledgerdemain.db import LedgerDB, make_bank_fingerprint
 from ledgerdemain.http_client import HttpClient, HttpResponse
-from ledgerdemain.models import ZERO, BankTransaction
+from ledgerdemain.models import BankTransaction, HarvestInvoiceLineItem
+from ledgerdemain.money import ZERO, Money
 from ledgerdemain.planner import Planner
 from ledgerdemain.reconcile import Reconciler
 from tests.fixtures import (
@@ -147,7 +150,7 @@ def test_harvest_api_pagination_and_updated_since() -> None:
     assert len(clients) == 1
     assert len(invoices) == 2
     assert invoices[0].paid_date == "2026-01-05"
-    assert invoices[0].subtotal == Decimal("3000.00")
+    assert invoices[0].subtotal == Money.parse("3000.00")
     assert payments[0].payment_gateway == "ACH"
     assert any("updated_since=2026-01-01T00%3A00%3A00Z" in u for _, u, _ in transport.requests)
 
@@ -159,8 +162,8 @@ def test_harvest_csv_adapter(tmp_path: Path) -> None:
 
     assert len(invs) == 3
     assert invs[0].invoice_number == "1001"
-    assert invs[0].total_amount == Decimal("3000.00")
-    assert invs[2].due_amount == Decimal("1500.00")
+    assert invs[0].total_amount == Money.parse("3000.00")
+    assert invs[2].due_amount == Money.parse("1500.00")
 
 
 def test_grasshopper_api_and_csv_and_ofx(tmp_path: Path) -> None:
@@ -206,7 +209,7 @@ def test_grasshopper_api_and_csv_and_ofx(tmp_path: Path) -> None:
     assert len(txs) == 2
     assert txs[0].direction == "DEPOSIT"
     assert txs[1].direction == "WITHDRAWAL"
-    assert txs[1].amount == Decimal("2000.50")
+    assert txs[1].amount == Money.parse("2000.50")
 
     csv_path = tmp_path / "gh.csv"
     csv_path.write_text(SAMPLE_GRASSHOPPER_CSV, encoding="utf-8")
@@ -250,7 +253,7 @@ def test_capital_one_pdf_year_rollover_and_sections(tmp_path: Path) -> None:
     assert len(txs) == 4
     assert txs[0].posted_date == "2025-12-21"
     assert txs[0].direction == "DEPOSIT"
-    assert txs[0].amount == Decimal("250.00")
+    assert txs[0].amount == Money.parse("250.00")
     assert txs[0].card_last4 == "4321"
 
     assert txs[1].posted_date == "2026-01-02"
@@ -269,13 +272,13 @@ def test_gusto_payroll_and_contractor_csv(tmp_path: Path) -> None:
     run = runs[0]
     # Must NOT double-count Totals row
     assert run.employee_count == 2
-    assert run.gross_wages == Decimal("4500.00")
-    assert run.reimbursements == Decimal("150.00")
-    assert run.employee_taxes == Decimal("944.25")
-    assert run.employer_taxes == Decimal("371.25")
-    assert run.net_pay == Decimal("3555.75")
-    assert run.net_disbursement == Decimal("3705.75")
-    assert run.total_tax_debit == Decimal("1315.50")
+    assert run.gross_wages == Money.parse("4500.00")
+    assert run.reimbursements == Money.parse("150.00")
+    assert run.employee_taxes == Money.parse("944.25")
+    assert run.employer_taxes == Money.parse("371.25")
+    assert run.net_pay == Money.parse("3555.75")
+    assert run.net_disbursement == Money.parse("3705.75")
+    assert run.total_tax_debit == Money.parse("1315.50")
     assert run.tax_breakdown["futa"] == "27.00"
 
     # Accounting identity check
@@ -288,7 +291,7 @@ def test_gusto_payroll_and_contractor_csv(tmp_path: Path) -> None:
     contr_path.write_text(SAMPLE_GUSTO_CONTRACTOR_CSV, encoding="utf-8")
     c_runs = GustoPayrollCsvAdapter().parse_file(contr_path, run_type="contractor")
     assert len(c_runs) == 1
-    assert c_runs[0].net_disbursement == Decimal("1200.00")
+    assert c_runs[0].net_disbursement == Money.parse("1200.00")
     assert c_runs[0].run_type == "contractor"
 
 
@@ -303,16 +306,16 @@ def test_capital_one_ofx_xml_statement_and_dtuser_and_card_last4(tmp_path: Path)
     assert stmt.currency == "USD"
     assert stmt.start_date == "2026-01-01"
     assert stmt.end_date == "2026-01-31"
-    assert stmt.ledger_balance == Decimal("-1234.56")
+    assert stmt.ledger_balance == Money.parse("-1234.56")
     assert stmt.ledger_balance_as_of == "2026-02-01"
-    assert stmt.available_balance == Decimal("8765.44")
+    assert stmt.available_balance == Money.parse("8765.44")
     assert len(stmt.transactions) == 2
 
     charge, payment = stmt.transactions
     assert charge.tx_date == "2026-01-08"
     assert charge.posted_date == "2026-01-10"
     assert charge.direction == "WITHDRAWAL"
-    assert charge.amount == Decimal("42.50")
+    assert charge.amount == Money.parse("42.50")
     assert charge.external_id == "FIT-C1-001"
     assert charge.card_last4 == "8888"
     assert "CCACCTTO" not in charge.raw
@@ -321,7 +324,7 @@ def test_capital_one_ofx_xml_statement_and_dtuser_and_card_last4(tmp_path: Path)
     assert payment.tx_date == "2026-01-15"
     assert payment.posted_date == "2026-01-15"
     assert payment.direction == "DEPOSIT"
-    assert payment.amount == Decimal("500.00")
+    assert payment.amount == Money.parse("500.00")
     assert payment.card_last4 == "9999"
 
     # Re-ingesting via CapitalOneCsvAdapter (which delegates .ofx) is idempotent on FITID
@@ -361,7 +364,7 @@ def test_ofx_unescaped_ampersand_fallback() -> None:
         raw_ofx, source="capital_one", account_key="capital_one_card"
     )
     assert stmt.account_id == "9999"
-    assert stmt.ledger_balance == Decimal("-85.00")
+    assert stmt.ledger_balance == Money.parse("-85.00")
     assert len(stmt.transactions) == 1
     tx = stmt.transactions[0]
     assert tx.tx_date == "2026-01-11"
@@ -455,8 +458,8 @@ def test_gusto_payroll_journal_multi_section_and_scorp_imputed_benefits(tmp_path
     assert imputed_run.check_date == "2026-11-02"
     assert imputed_run.pay_period_start == "2026-08-01"
     assert imputed_run.pay_period_end == "2026-08-31"
-    assert imputed_run.gross_wages == Decimal("3200.00")
-    assert imputed_run.employer_benefits == Decimal("3200.00")
+    assert imputed_run.gross_wages == Money.parse("3200.00")
+    assert imputed_run.employer_benefits == Money.parse("3200.00")
     assert imputed_run.employee_benefits == ZERO
     assert imputed_run.net_pay == ZERO
     assert imputed_run.raw["non_cash_imputed_benefits"] is True
@@ -465,11 +468,11 @@ def test_gusto_payroll_journal_multi_section_and_scorp_imputed_benefits(tmp_path
     assert cash_run.check_date == "2026-11-04"
     assert cash_run.pay_period_start == "2026-08-01"
     assert cash_run.pay_period_end == "2026-10-31"
-    assert cash_run.gross_wages == Decimal("10000.00")
-    assert cash_run.employee_taxes == Decimal("765.00")
-    assert cash_run.employer_taxes == Decimal("790.00")
-    assert cash_run.net_pay == Decimal("9235.00")
-    assert cash_run.total_tax_debit == Decimal("1555.00")
+    assert cash_run.gross_wages == Money.parse("10000.00")
+    assert cash_run.employee_taxes == Money.parse("765.00")
+    assert cash_run.employer_taxes == Money.parse("790.00")
+    assert cash_run.net_pay == Money.parse("9235.00")
+    assert cash_run.total_tax_debit == Money.parse("1555.00")
     assert cash_run.tax_breakdown == {
         "ee_medicare": "145.00",
         "ee_social_security": "620.00",
@@ -495,14 +498,14 @@ def test_gusto_payroll_journal_multi_section_and_scorp_imputed_benefits(tmp_path
                     external_id=None,
                     posted_date="2026-11-03",
                     direction="WITHDRAWAL",
-                    amount=Decimal("9235.00"),
+                    amount=Money.parse("9235.00"),
                     normalized_description=normalize_description("GUSTO NET 999999 SYNTH"),
                 ),
                 tx_date="2026-11-03",
                 posted_date="2026-11-03",
                 description="GUSTO NET 999999 SYNTH",
                 normalized_description=normalize_description("GUSTO NET 999999 SYNTH"),
-                amount=Decimal("9235.00"),
+                amount=Money.parse("9235.00"),
                 direction="WITHDRAWAL",
             ),
             BankTransaction(
@@ -515,14 +518,14 @@ def test_gusto_payroll_journal_multi_section_and_scorp_imputed_benefits(tmp_path
                     external_id=None,
                     posted_date="2026-11-03",
                     direction="WITHDRAWAL",
-                    amount=Decimal("1555.00"),
+                    amount=Money.parse("1555.00"),
                     normalized_description=normalize_description("GUSTO TAX 888888 SYNTH"),
                 ),
                 tx_date="2026-11-03",
                 posted_date="2026-11-03",
                 description="GUSTO TAX 888888 SYNTH",
                 normalized_description=normalize_description("GUSTO TAX 888888 SYNTH"),
-                amount=Decimal("1555.00"),
+                amount=Money.parse("1555.00"),
                 direction="WITHDRAWAL",
             ),
         ]
@@ -546,4 +549,135 @@ def test_gusto_payroll_journal_multi_section_and_scorp_imputed_benefits(tmp_path
             for li in stx.line_items:
                 if li.account_key == "payroll_taxes_payable":
                     tax_net += li.amount if li.balance == "INCREASE" else -li.amount
-        assert tax_net == Decimal("0.00")
+        assert tax_net == ZERO
+
+
+def test_grasshopper_amount_cents_integral_float_and_non_integral_rejection() -> None:
+    def fetch_payload(tx_rows: list[dict[str, object]]) -> list[BankTransaction]:
+        def handler(
+            method: str, url: str, headers: dict[str, str], body: bytes | None
+        ) -> HttpResponse:
+            del method, url, headers, body
+            return HttpResponse(200, {}, json.dumps({"transactions": tx_rows}).encode("utf-8"))
+
+        api = GrasshopperApiAdapter(
+            GrasshopperConfig(account_id="acct-99", access_token="gh-tok", header_secret="sec-123"),
+            http_client=HttpClient(
+                transport=_RoutingMockTransport(handler),
+                sleep_fn=lambda _: None,
+            ),
+        )
+        return api.fetch_transactions()
+
+    txs = fetch_payload(
+        [
+            {
+                "id": "gh-float-cents",
+                "posted_date": "2026-01-07",
+                "description": "FLOAT CENTS DEBIT",
+                "amount_cents": 1234.0,
+                "direction": "DEBIT",
+            },
+            {
+                "id": "gh-str-cents",
+                "posted_date": "2026-01-08",
+                "description": "STRING CENTS CREDIT",
+                "amount_cents": "5678.00",
+                "direction": "CREDIT",
+            },
+        ]
+    )
+    assert len(txs) == 2
+    assert txs[0].amount == Money(1234)
+    assert txs[1].amount == Money(5678)
+
+    with pytest.raises(ValueError, match="Non-integral amount_cents"):
+        fetch_payload(
+            [
+                {
+                    "id": "gh-frac-cents",
+                    "posted_date": "2026-01-09",
+                    "description": "FRAC CENTS",
+                    "amount_cents": 1234.5,
+                    "direction": "DEBIT",
+                }
+            ]
+        )
+
+    with pytest.raises(TypeError, match="does not accept bool"):
+        fetch_payload(
+            [
+                {
+                    "id": "gh-bool-cents",
+                    "posted_date": "2026-01-10",
+                    "description": "BOOL CENTS",
+                    "amount_cents": True,
+                    "direction": "DEBIT",
+                }
+            ]
+        )
+
+
+def test_harvest_line_item_quantity_validation() -> None:
+    def parse_invoice_qty(raw_qty: object, *, omit_qty: bool = False) -> str:
+        line: dict[str, object] = {
+            "kind": "Service",
+            "description": "Consulting",
+            "unit_price": "100.00",
+            "amount": "100.00",
+        }
+        if not omit_qty:
+            line["quantity"] = raw_qty
+        inv = HarvestApiAdapter._parse_api_invoice(
+            {
+                "id": 999,
+                "number": "999",
+                "client": {"id": 1, "name": "Acme"},
+                "issue_date": "2026-01-01",
+                "due_date": "2026-01-31",
+                "state": "open",
+                "currency": "USD",
+                "amount": "100.00",
+                "due_amount": "100.00",
+                "line_items": [line],
+            }
+        )
+        return inv.line_items[0].quantity
+
+    for valid in ("1", "20", "2.5", "0.25", " 3.5 "):
+        direct = HarvestInvoiceLineItem(
+            kind="Service",
+            description="Consulting",
+            quantity=valid,
+            unit_price=Money(10000),
+            amount=Money(10000),
+        )
+        assert direct.quantity == valid.strip()
+        assert parse_invoice_qty(valid) == valid.strip()
+
+    assert parse_invoice_qty(None) == "1"
+    assert parse_invoice_qty(None, omit_qty=True) == "1"
+
+    for invalid in ("abc", "", "   ", "NaN", "inf"):
+        with pytest.raises(ValueError):
+            HarvestInvoiceLineItem(
+                kind="Service",
+                description="Consulting",
+                quantity=invalid,
+                unit_price=Money(10000),
+                amount=Money(10000),
+            )
+        with pytest.raises(ValueError):
+            parse_invoice_qty(invalid)
+
+    bad_bool: Any = True
+    with pytest.raises(TypeError):
+        HarvestInvoiceLineItem(
+            kind="Service",
+            description="Consulting",
+            quantity=bad_bool,
+            unit_price=Money(10000),
+            amount=Money(10000),
+        )
+    with pytest.raises(ValueError):
+        parse_invoice_qty(True)

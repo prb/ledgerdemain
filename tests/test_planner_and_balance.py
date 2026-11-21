@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from decimal import Decimal
 from pathlib import Path
 
 import pytest
@@ -11,12 +10,12 @@ from ledgerdemain.categorize import Categorizer
 from ledgerdemain.config import ConfigError, load_rules
 from ledgerdemain.db import LedgerDB
 from ledgerdemain.models import (
-    ZERO,
     BankTransaction,
     GustoPayrollRun,
     HarvestInvoice,
     StagedLineItem,
 )
+from ledgerdemain.money import ZERO, Money
 from ledgerdemain.planner import (
     DEFAULT_NORMAL_BALANCE,
     BalanceError,
@@ -49,7 +48,7 @@ def _tx(
         posted_date=posted_date,
         description=desc,
         normalized_description=desc.upper(),
-        amount=Decimal(amt),
+        amount=Money.parse(amt),
         direction=direction,
         source_category=cat,
     )
@@ -60,44 +59,44 @@ def test_validate_double_entry_all_nine_patterns_and_rejections() -> None:
     validate_double_entry_balance(
         "grasshopper_checking",
         "DEPOSIT",
-        Decimal("3000.00"),
-        [StagedLineItem("revenue_default", None, Decimal("3000.00"), "INCREASE")],
+        Money.parse("3000.00"),
+        [StagedLineItem("revenue_default", None, Money.parse("3000.00"), "INCREASE")],
         _lookup,
     )
     # 2. Bank expense
     validate_double_entry_balance(
         "grasshopper_checking",
         "WITHDRAWAL",
-        Decimal("45.00"),
-        [StagedLineItem("payroll_processing_fees", None, Decimal("45.00"), "INCREASE")],
+        Money.parse("45.00"),
+        [StagedLineItem("payroll_processing_fees", None, Money.parse("45.00"), "INCREASE")],
         _lookup,
     )
     # 3. Credit card purchase
     validate_double_entry_balance(
         "capital_one_card",
         "WITHDRAWAL",
-        Decimal("142.50"),
-        [StagedLineItem("cloud_hosting", None, Decimal("142.50"), "INCREASE")],
+        Money.parse("142.50"),
+        [StagedLineItem("cloud_hosting", None, Money.parse("142.50"), "INCREASE")],
         _lookup,
     )
     # 4. Credit card refund
     validate_double_entry_balance(
         "capital_one_card",
         "DEPOSIT",
-        Decimal("15.00"),
-        [StagedLineItem("software_subscriptions", None, Decimal("15.00"), "DECREASE")],
+        Money.parse("15.00"),
+        [StagedLineItem("software_subscriptions", None, Money.parse("15.00"), "DECREASE")],
         _lookup,
     )
     # 5. Gusto Net split
     validate_double_entry_balance(
         "grasshopper_checking",
         "WITHDRAWAL",
-        Decimal("3650.00"),
+        Money.parse("3650.00"),
         [
-            StagedLineItem("payroll_gross_wages", None, Decimal("4500.00"), "INCREASE"),
-            StagedLineItem("payroll_reimbursements", None, Decimal("150.00"), "INCREASE"),
-            StagedLineItem("payroll_taxes_payable", None, Decimal("900.00"), "INCREASE"),
-            StagedLineItem("payroll_benefits_payable", None, Decimal("100.00"), "INCREASE"),
+            StagedLineItem("payroll_gross_wages", None, Money.parse("4500.00"), "INCREASE"),
+            StagedLineItem("payroll_reimbursements", None, Money.parse("150.00"), "INCREASE"),
+            StagedLineItem("payroll_taxes_payable", None, Money.parse("900.00"), "INCREASE"),
+            StagedLineItem("payroll_benefits_payable", None, Money.parse("100.00"), "INCREASE"),
         ],
         _lookup,
     )
@@ -105,10 +104,10 @@ def test_validate_double_entry_all_nine_patterns_and_rejections() -> None:
     validate_double_entry_balance(
         "grasshopper_checking",
         "WITHDRAWAL",
-        Decimal("1250.00"),
+        Money.parse("1250.00"),
         [
-            StagedLineItem("payroll_taxes_payable", None, Decimal("900.00"), "DECREASE"),
-            StagedLineItem("payroll_employer_taxes", None, Decimal("350.00"), "INCREASE"),
+            StagedLineItem("payroll_taxes_payable", None, Money.parse("900.00"), "DECREASE"),
+            StagedLineItem("payroll_employer_taxes", None, Money.parse("350.00"), "INCREASE"),
         ],
         _lookup,
     )
@@ -116,10 +115,10 @@ def test_validate_double_entry_all_nine_patterns_and_rejections() -> None:
     validate_double_entry_balance(
         "grasshopper_checking",
         "WITHDRAWAL",
-        Decimal("300.00"),
+        Money.parse("300.00"),
         [
-            StagedLineItem("payroll_benefits_payable", None, Decimal("100.00"), "DECREASE"),
-            StagedLineItem("payroll_employer_benefits", None, Decimal("200.00"), "INCREASE"),
+            StagedLineItem("payroll_benefits_payable", None, Money.parse("100.00"), "DECREASE"),
+            StagedLineItem("payroll_employer_benefits", None, Money.parse("200.00"), "INCREASE"),
         ],
         _lookup,
     )
@@ -127,10 +126,10 @@ def test_validate_double_entry_all_nine_patterns_and_rejections() -> None:
     validate_double_entry_balance(
         "grasshopper_checking",
         "WITHDRAWAL",
-        Decimal("2160.00"),
+        Money.parse("2160.00"),
         [
-            StagedLineItem("payroll_gross_wages", None, Decimal("2000.00"), "INCREASE"),
-            StagedLineItem("payroll_employer_taxes", None, Decimal("160.00"), "INCREASE"),
+            StagedLineItem("payroll_gross_wages", None, Money.parse("2000.00"), "INCREASE"),
+            StagedLineItem("payroll_employer_taxes", None, Money.parse("160.00"), "INCREASE"),
         ],
         _lookup,
     )
@@ -138,10 +137,10 @@ def test_validate_double_entry_all_nine_patterns_and_rejections() -> None:
     validate_double_entry_balance(
         "grasshopper_checking",
         "DEPOSIT",
-        Decimal("1940.00"),
+        Money.parse("1940.00"),
         [
-            StagedLineItem("revenue_default", None, Decimal("2000.00"), "INCREASE"),
-            StagedLineItem("merchant_fees", None, Decimal("60.00"), "INCREASE"),
+            StagedLineItem("revenue_default", None, Money.parse("2000.00"), "INCREASE"),
+            StagedLineItem("merchant_fees", None, Money.parse("60.00"), "INCREASE"),
         ],
         _lookup,
     )
@@ -151,8 +150,8 @@ def test_validate_double_entry_all_nine_patterns_and_rejections() -> None:
         validate_double_entry_balance(
             "capital_one_card",
             "WITHDRAWAL",
-            Decimal("100.00"),
-            [StagedLineItem("cloud_hosting", None, Decimal("99.99"), "INCREASE")],
+            Money.parse("100.00"),
+            [StagedLineItem("cloud_hosting", None, Money.parse("99.99"), "INCREASE")],
             _lookup,
         )
 
@@ -161,8 +160,8 @@ def test_validate_double_entry_all_nine_patterns_and_rejections() -> None:
         validate_double_entry_balance(
             "grasshopper_checking",
             "WITHDRAWAL",
-            Decimal("100.00"),
-            [StagedLineItem("grasshopper_checking", None, Decimal("100.00"), "DECREASE")],
+            Money.parse("100.00"),
+            [StagedLineItem("grasshopper_checking", None, Money.parse("100.00"), "DECREASE")],
             _lookup,
         )
 
@@ -205,10 +204,10 @@ def test_harvest_accounting_strategies_and_payroll_clearing(
                     "2026-01-05",
                     "paid",
                     "USD",
-                    Decimal("3000.00"),
-                    Decimal("0.00"),
-                    Decimal("3000.00"),
-                    Decimal("0.00"),
+                    Money.parse("3000.00"),
+                    ZERO,
+                    Money.parse("3000.00"),
+                    ZERO,
                 )
             ]
         )
@@ -220,13 +219,13 @@ def test_harvest_accounting_strategies_and_payroll_clearing(
                     pay_period_start="2026-01-01",
                     pay_period_end="2026-01-15",
                     run_type="regular",
-                    gross_wages=Decimal("4500.00"),
-                    reimbursements=Decimal("150.00"),
-                    employee_taxes=Decimal("900.00"),
-                    employer_taxes=Decimal("350.00"),
-                    employee_benefits=Decimal("100.00"),
-                    employer_benefits=Decimal("200.00"),
-                    net_pay=Decimal("3500.00"),
+                    gross_wages=Money.parse("4500.00"),
+                    reimbursements=Money.parse("150.00"),
+                    employee_taxes=Money.parse("900.00"),
+                    employer_taxes=Money.parse("350.00"),
+                    employee_benefits=Money.parse("100.00"),
+                    employer_benefits=Money.parse("200.00"),
+                    net_pay=Money.parse("3500.00"),
                 )
             ]
         )
@@ -279,8 +278,8 @@ def test_harvest_accounting_strategies_and_payroll_clearing(
                     tax_net += delta
                 elif li.account_key == "payroll_benefits_payable":
                     ben_net += delta
-        assert tax_net == Decimal("0.00")
-        assert ben_net == Decimal("0.00")
+        assert tax_net == ZERO
+        assert ben_net == ZERO
 
 
 @pytest.mark.parametrize(
@@ -332,7 +331,7 @@ def test_cc_transfer_manual_vs_clearing_and_unpaired(
         Planner(db, cfg, Categorizer(rules)).build_plan()
 
         staged = db.list_staged_transactions()
-        paired = [t for t in staged if t.anchor_amount == Decimal("500.00")]
+        paired = [t for t in staged if t.anchor_amount == Money.parse("500.00")]
         assert len(paired) == 2
         assert all(t.status == expected_status for t in paired)
         if strat == "clearing_account":
@@ -341,7 +340,7 @@ def test_cc_transfer_manual_vs_clearing_and_unpaired(
             assert paired[1].line_items[0].account_key == "cc_transfer_clearing"
             assert paired[1].line_items[0].balance == "DECREASE"
 
-        unpaired = next(t for t in staged if t.anchor_amount == Decimal("250.00"))
+        unpaired = next(t for t in staged if t.anchor_amount == Money.parse("250.00"))
         assert unpaired.status == "needs_review"
 
 
@@ -366,10 +365,10 @@ def test_switching_off_invoice_mirroring_clears_unpushed_staged_invoices(
                     "2026-03-10",
                     "paid",
                     "USD",
-                    Decimal("1500.00"),
-                    Decimal("0.00"),
-                    Decimal("1500.00"),
-                    Decimal("0.00"),
+                    Money.parse("1500.00"),
+                    ZERO,
+                    Money.parse("1500.00"),
+                    ZERO,
                 )
             ]
         )

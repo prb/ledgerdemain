@@ -6,12 +6,11 @@ from typing import Any
 
 from ledgerdemain.http_client import HttpClient
 from ledgerdemain.models import (
-    ZERO,
     WaveAccount,
     WaveCustomer,
     WaveProduct,
-    to_decimal,
 )
+from ledgerdemain.money import ZERO, parse_money
 
 
 class WaveApiError(RuntimeError):
@@ -378,7 +377,7 @@ class WaveGraphQLClient:
                     WaveProduct(
                         wave_id=str(node["id"]),
                         name=str(node["name"]),
-                        unit_price=to_decimal(node.get("unitPrice"), ZERO),
+                        unit_price=parse_money(node.get("unitPrice"), ZERO),
                         income_account_id=str(income_acc.get("id") or ""),
                     )
                 )
@@ -448,7 +447,7 @@ class WaveGraphQLClient:
         return WaveProduct(
             wave_id=str(node["id"]),
             name=str(node["name"]),
-            unit_price=to_decimal(node.get("unitPrice"), ZERO),
+            unit_price=parse_money(node.get("unitPrice"), ZERO),
             income_account_id=str(income_acc.get("id") or income_account_id),
         )
 

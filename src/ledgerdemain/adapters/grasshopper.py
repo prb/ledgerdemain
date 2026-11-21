@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import csv
+import math
+import re
 from collections import defaultdict
-from decimal import Decimal
 from pathlib import Path
 from typing import Any
 from urllib.parse import urljoin
@@ -14,12 +15,29 @@ from ledgerdemain.adapters.ofx import OfxTransactionParser
 from ledgerdemain.config import ConfigError, GrasshopperConfig
 from ledgerdemain.db import make_bank_fingerprint
 from ledgerdemain.http_client import HttpClient
-from ledgerdemain.models import ZERO, BankTransaction, fmt_decimal, to_decimal
+from ledgerdemain.models import BankTransaction
+from ledgerdemain.money import ZERO, Money, format_money, parse_money
+
+_INTEGRAL_CENTS_STR_RE = re.compile(r"^([+-]?\d+)(?:\.0+)?$")
 
 
-def _cents_to_decimal(val: int | str) -> Decimal:
-    """Convert signed integer cents into a 2-decimal-place Decimal amount."""
-    return (Decimal(str(val)) / Decimal("100")).quantize(Decimal("0.01"))
+def _parse_cents_field(value: Any) -> Money:
+    """Parse an amount_cents field, accepting ints/integral floats and rejecting fractions."""
+    if isinstance(value, bool):
+        raise TypeError("amount_cents does not accept bool")
+    if isinstance(value, int):
+        return Money.from_cents(value)
+    if isinstance(value, float):
+        if not math.isfinite(value) or not value.is_integer():
+            raise ValueError(f"Non-integral amount_cents value: {value!r}")
+        return Money.from_cents(int(value))
+    if isinstance(value, str):
+        text = value.strip()
+        match = _INTEGRAL_CENTS_STR_RE.match(text)
+        if not match:
+            raise ValueError(f"Invalid integer-cents value: {value!r}")
+        return Money.from_cents(int(match.group(1)))
+    raise TypeError(f"Unsupported amount_cents type: {type(value).__name__}")
 
 
 def _extract_account_balance(item: dict[str, Any]) -> str:
@@ -31,8 +49,8 @@ def _extract_account_balance(item: dict[str, Any]) -> str:
             if val is None:
                 continue
             if isinstance(val, int) and not isinstance(val, bool):
-                return fmt_decimal(_cents_to_decimal(val))
-            return fmt_decimal(to_decimal(val, ZERO))
+                return Money.from_cents(val).format()
+            return format_money(parse_money(val, ZERO))
     bal = item.get("available_balance") or item.get("current_balance") or item.get("balance") or ""
     return str(bal)
 
@@ -239,13 +257,14 @@ class GrasshopperApiAdapter:
         )
         tx_date = parse_flexible_date(str(tx_date_raw))
 
+        raw_cents = item.get("amount_cents")
         raw_amount_val = item.get("amount")
-        if item.get("amount_cents") is not None and raw_amount_val is None:
-            raw_amt = _cents_to_decimal(str(item["amount_cents"]))
+        if raw_cents is not None and raw_amount_val is None:
+            raw_amt = _parse_cents_field(raw_cents)
         elif isinstance(raw_amount_val, int) and not isinstance(raw_amount_val, bool):
-            raw_amt = _cents_to_decimal(raw_amount_val)
+            raw_amt = Money.from_cents(raw_amount_val)
         else:
-            raw_amt = to_decimal(raw_amount_val, ZERO)
+            raw_amt = parse_money(raw_amount_val, ZERO)
 
         if raw_amt == ZERO:
             return None
@@ -411,12 +430,12 @@ class GrasshopperCsvAdapter:
         return None
 
     @staticmethod
-    def _parse_amount_and_direction(row: dict[str, str]) -> tuple[str, Decimal] | None:
+    def _parse_amount_and_direction(row: dict[str, str]) -> tuple[str, Money] | None:
         debit_raw = row.get("debit") or row.get("withdrawal") or ""
         credit_raw = row.get("credit") or row.get("deposit") or ""
         if debit_raw or credit_raw:
-            debit_amt = abs(to_decimal(debit_raw, ZERO)) if debit_raw else ZERO
-            credit_amt = abs(to_decimal(credit_raw, ZERO)) if credit_raw else ZERO
+            debit_amt = abs(parse_money(debit_raw, ZERO)) if debit_raw else ZERO
+            credit_amt = abs(parse_money(credit_raw, ZERO)) if credit_raw else ZERO
             if debit_amt > ZERO:
                 return "WITHDRAWAL", debit_amt
             if credit_amt > ZERO:
@@ -426,7 +445,7 @@ class GrasshopperCsvAdapter:
         amt_raw = row.get("amount") or ""
         if not amt_raw:
             return None
-        signed = to_decimal(amt_raw, ZERO)
+        signed = parse_money(amt_raw, ZERO)
         if signed == ZERO:
             return None
 

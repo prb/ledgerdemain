@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from decimal import Decimal
 from pathlib import Path
 
 from ledgerdemain.db import LedgerDB
@@ -12,6 +11,7 @@ from ledgerdemain.models import (
     HarvestInvoice,
     HarvestPayment,
 )
+from ledgerdemain.money import ZERO, Money
 from ledgerdemain.reconcile import Reconciler
 from tests.fixtures import make_test_config
 
@@ -34,7 +34,7 @@ def _bank_tx(
         posted_date=posted_date,
         description=desc,
         normalized_description=desc.upper(),
-        amount=Decimal(amount),
+        amount=Money.parse(amount),
         direction=direction,
         source_category=category,
     )
@@ -56,10 +56,10 @@ def test_harvest_single_batch_and_net_fee_matches(tmp_path: Path) -> None:
                     "2026-01-05",
                     "paid",
                     "USD",
-                    Decimal("1000.00"),
-                    Decimal("0.00"),
-                    Decimal("1000.00"),
-                    Decimal("0.00"),
+                    Money.parse("1000.00"),
+                    ZERO,
+                    Money.parse("1000.00"),
+                    ZERO,
                 ),
                 HarvestInvoice(
                     "2",
@@ -71,10 +71,10 @@ def test_harvest_single_batch_and_net_fee_matches(tmp_path: Path) -> None:
                     None,
                     "open",
                     "USD",
-                    Decimal("400.00"),
-                    Decimal("0.00"),
-                    Decimal("400.00"),
-                    Decimal("400.00"),
+                    Money.parse("400.00"),
+                    ZERO,
+                    Money.parse("400.00"),
+                    Money.parse("400.00"),
                 ),
                 HarvestInvoice(
                     "3",
@@ -86,10 +86,10 @@ def test_harvest_single_batch_and_net_fee_matches(tmp_path: Path) -> None:
                     None,
                     "open",
                     "USD",
-                    Decimal("600.00"),
-                    Decimal("0.00"),
-                    Decimal("600.00"),
-                    Decimal("600.00"),
+                    Money.parse("600.00"),
+                    ZERO,
+                    Money.parse("600.00"),
+                    Money.parse("600.00"),
                 ),
                 HarvestInvoice(
                     "4",
@@ -101,15 +101,15 @@ def test_harvest_single_batch_and_net_fee_matches(tmp_path: Path) -> None:
                     "2026-01-12",
                     "paid",
                     "USD",
-                    Decimal("2000.00"),
-                    Decimal("0.00"),
-                    Decimal("2000.00"),
-                    Decimal("0.00"),
+                    Money.parse("2000.00"),
+                    ZERO,
+                    Money.parse("2000.00"),
+                    ZERO,
                 ),
             ]
         )
         db.upsert_harvest_payments(
-            [HarvestPayment("p1", "1", "2026-01-05", Decimal("1000.00"), "ACH")]
+            [HarvestPayment("p1", "1", "2026-01-05", Money.parse("1000.00"), "ACH")]
         )
         db.upsert_bank_transactions(
             [
@@ -152,13 +152,13 @@ def test_gusto_split_combined_contractor_and_fee_exclusion(tmp_path: Path) -> No
                     pay_period_start="2026-01-01",
                     pay_period_end="2026-01-15",
                     run_type="regular",
-                    gross_wages=Decimal("4500.00"),
-                    reimbursements=Decimal("150.00"),
-                    employee_taxes=Decimal("900.00"),
-                    employer_taxes=Decimal("350.00"),
-                    employee_benefits=Decimal("100.00"),
-                    employer_benefits=Decimal("200.00"),
-                    net_pay=Decimal("3500.00"),
+                    gross_wages=Money.parse("4500.00"),
+                    reimbursements=Money.parse("150.00"),
+                    employee_taxes=Money.parse("900.00"),
+                    employer_taxes=Money.parse("350.00"),
+                    employee_benefits=Money.parse("100.00"),
+                    employer_benefits=Money.parse("200.00"),
+                    net_pay=Money.parse("3500.00"),
                 ),
                 GustoPayrollRun(
                     fingerprint="run-comb",
@@ -166,13 +166,13 @@ def test_gusto_split_combined_contractor_and_fee_exclusion(tmp_path: Path) -> No
                     pay_period_start="2026-01-16",
                     pay_period_end="2026-01-31",
                     run_type="regular",
-                    gross_wages=Decimal("2000.00"),
-                    reimbursements=Decimal("0.00"),
-                    employee_taxes=Decimal("400.00"),
-                    employer_taxes=Decimal("160.00"),
-                    employee_benefits=Decimal("0.00"),
-                    employer_benefits=Decimal("0.00"),
-                    net_pay=Decimal("1600.00"),
+                    gross_wages=Money.parse("2000.00"),
+                    reimbursements=ZERO,
+                    employee_taxes=Money.parse("400.00"),
+                    employer_taxes=Money.parse("160.00"),
+                    employee_benefits=ZERO,
+                    employer_benefits=ZERO,
+                    net_pay=Money.parse("1600.00"),
                 ),
                 GustoPayrollRun(
                     fingerprint="run-contr",
@@ -180,13 +180,13 @@ def test_gusto_split_combined_contractor_and_fee_exclusion(tmp_path: Path) -> No
                     pay_period_start="2026-01-18",
                     pay_period_end="2026-01-18",
                     run_type="contractor",
-                    gross_wages=Decimal("1200.00"),
-                    reimbursements=Decimal("0.00"),
-                    employee_taxes=Decimal("0.00"),
-                    employer_taxes=Decimal("0.00"),
-                    employee_benefits=Decimal("0.00"),
-                    employer_benefits=Decimal("0.00"),
-                    net_pay=Decimal("1200.00"),
+                    gross_wages=Money.parse("1200.00"),
+                    reimbursements=ZERO,
+                    employee_taxes=ZERO,
+                    employer_taxes=ZERO,
+                    employee_benefits=ZERO,
+                    employer_benefits=ZERO,
+                    net_pay=Money.parse("1200.00"),
                 ),
             ]
         )

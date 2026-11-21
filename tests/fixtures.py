@@ -4,12 +4,12 @@ from __future__ import annotations
 
 import json
 import zlib
-from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
 from ledgerdemain.config import AppConfig, load_config
 from ledgerdemain.http_client import HttpResponse
+from ledgerdemain.money import ZERO, parse_money
 
 
 def create_synthetic_pdf(lines: list[str], path: Path) -> None:
@@ -588,8 +588,8 @@ class MockWaveTransport:
             # Server-side double-entry check
             acc_normals = {a["id"]: a["type"]["normalBalanceType"] for a in self.accounts}
             anchor = inp["anchor"]
-            anchor_amt = Decimal(str(anchor["amount"]))
-            net_debit = Decimal("0.00")
+            anchor_amt = parse_money(str(anchor["amount"]))
+            net_debit = ZERO
             for li in inp["lineItems"]:
                 if li["accountId"] == anchor["accountId"]:
                     return self._json_ok(
@@ -607,7 +607,7 @@ class MockWaveTransport:
                             }
                         }
                     )
-                amt = Decimal(str(li["amount"]))
+                amt = parse_money(str(li["amount"]))
                 normal = acc_normals[li["accountId"]]
                 if normal == "DEBIT":
                     net_debit += amt if li["balance"] == "INCREASE" else -amt

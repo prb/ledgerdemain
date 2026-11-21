@@ -10,8 +10,8 @@ from ledgerdemain.db import LedgerDB
 from ledgerdemain.models import (
     StagedInvoice,
     StagedTransaction,
-    fmt_decimal,
 )
+from ledgerdemain.money import format_money
 from ledgerdemain.planner import DEFAULT_NORMAL_BALANCE, BalanceError, validate_double_entry_balance
 from ledgerdemain.wave.client import WaveApiError, WaveGraphQLClient
 
@@ -233,7 +233,7 @@ class WaveSyncService:
             for li in tx.line_items:
                 entry: dict[str, Any] = {
                     "accountId": account_id_map[li.account_key],
-                    "amount": fmt_decimal(li.amount),
+                    "amount": format_money(li.amount),
                     "balance": li.balance,
                 }
                 if li.description:
@@ -255,7 +255,7 @@ class WaveSyncService:
                 "description": tx.description,
                 "anchor": {
                     "accountId": account_id_map[tx.anchor_account_key],
-                    "amount": fmt_decimal(tx.anchor_amount),
+                    "amount": format_money(tx.anchor_amount),
                     "direction": tx.anchor_direction,
                 },
                 "lineItems": line_items_payload,

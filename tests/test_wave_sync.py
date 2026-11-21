@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from decimal import Decimal
 from pathlib import Path
 
 from ledgerdemain.categorize import Categorizer
@@ -10,6 +9,7 @@ from ledgerdemain.config import load_rules
 from ledgerdemain.db import LedgerDB
 from ledgerdemain.http_client import HttpClient
 from ledgerdemain.models import BankTransaction, HarvestInvoice
+from ledgerdemain.money import ZERO, Money
 from ledgerdemain.planner import Planner
 from ledgerdemain.reconcile import Reconciler
 from ledgerdemain.wave.client import WaveGraphQLClient
@@ -33,10 +33,10 @@ def _setup_staged_db(tmp: Path, db: LedgerDB) -> None:
                 "2026-01-05",
                 "paid",
                 "USD",
-                Decimal("3000.00"),
-                Decimal("0.00"),
-                Decimal("3000.00"),
-                Decimal("0.00"),
+                Money.parse("3000.00"),
+                ZERO,
+                Money.parse("3000.00"),
+                ZERO,
                 subject="Jan Retainer",
             ),
             HarvestInvoice(
@@ -49,10 +49,10 @@ def _setup_staged_db(tmp: Path, db: LedgerDB) -> None:
                 None,
                 "open",
                 "USD",
-                Decimal("1500.00"),
-                Decimal("0.00"),
-                Decimal("1500.00"),
-                Decimal("1500.00"),
+                Money.parse("1500.00"),
+                ZERO,
+                Money.parse("1500.00"),
+                Money.parse("1500.00"),
                 subject="Advisory",
             ),
         ]
@@ -68,7 +68,7 @@ def _setup_staged_db(tmp: Path, db: LedgerDB) -> None:
                 posted_date="2026-01-05",
                 description="ACH DEPOSIT ACME CORP",
                 normalized_description="ACH DEPOSIT ACME CORP",
-                amount=Decimal("3000.00"),
+                amount=Money.parse("3000.00"),
                 direction="DEPOSIT",
             ),
             BankTransaction(
@@ -80,7 +80,7 @@ def _setup_staged_db(tmp: Path, db: LedgerDB) -> None:
                 posted_date="2026-01-07",
                 description="AMAZON WEB SERVICES",
                 normalized_description="AMAZON WEB SERVICES",
-                amount=Decimal("142.50"),
+                amount=Money.parse("142.50"),
                 direction="WITHDRAWAL",
             ),
         ]

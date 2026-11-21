@@ -20,12 +20,18 @@ validating monetary amounts and accounting transactions in Ledgerdemain.
 - **Parse and round at ingestion boundaries only.** Convert external strings, numbers,
   and API payloads into `Money` immediately at adapter/deserialization boundaries using
   `parse_money` / `Money.parse` (exact string parsing with half-up rounding) or
-  `Money.from_cents` for integer-cent APIs (e.g., Grasshopper/Narmi). Reject `bool`,
-  `NaN`, and `Inf`.
-- **Use exact rational scaling for allocations.** When scaling or splitting monetary
-  amounts, use `Money.mul_ratio(numerator, denominator)` (exact integer arithmetic with
-  half-up rounding) rather than floating-point division or multiplication, and verify
-  that split allocations sum exactly to the original whole amount with no lost cents.
+  `Money.from_cents` for integer-cent APIs (e.g., Grasshopper/Narmi). Finite `float`
+  values from JSON/APIs may be converted via `Money.parse` (which uses `repr` and rounds
+  half-up) at these boundaries, while `bool`, `NaN`, and `Inf` are rejected; never store
+  or compute monetary values as `float` inside the domain.
+- **Use exact rational scaling and explicit remainder handling for splits.** Use
+  `Money.mul_ratio(numerator, denominator)` (exact integer arithmetic with half-up
+  rounding) for rational scaling such as percentage bounds or thresholds (e.g., fee
+  windows in `reconcile.py`) rather than floating-point division or multiplication.
+  Because `mul_ratio` rounds each scaled value independently and there is no built-in
+  allocation helper, any multi-way split must assign the rounding remainder explicitly
+  (for example, to the last leg or via deterministic cent distribution) so that the
+  parts sum exactly to the original whole amount with no lost cents.
 - **Store unsigned magnitudes with explicit direction or balance enums.** On
   `BankTransaction` and `StagedTransaction` anchors, store positive `Money` amounts
   paired with `direction` (`DEPOSIT` or `WITHDRAWAL`). On `StagedLineItem`, store
@@ -44,10 +50,12 @@ validating monetary amounts and accounting transactions in Ledgerdemain.
 - **Serialize canonically for storage, APIs, and fingerprints.** Format `Money` with
   `format_money(value)` (`Money.format()`, e.g. `"-1234.56"`, fixed 2 decimal places,
   no currency symbols or thousands separators) for SQLite persistence, JSON payloads,
-  Wave GraphQL inputs, and deterministic SHA-256 fingerprints (`make_bank_fingerprint`,
-  `make_gusto_fingerprint`). Reserve `Money.format_comma()` for human-readable CLI and
-  report display. Preserve canonical formatting so re-ingesting overlapping exports
-  remains idempotent.
+  Wave GraphQL inputs, and deterministic SHA-256 fingerprints (`make_bank_fingerprint`
+  and `GustoPayrollCsvAdapter._run_fingerprint` in `adapters/gusto.py`).
+  `Money.format_comma()` is available strictly for optional human-readable display
+  (current CLI and report output uses `format_money`) and must never be used for
+  persistence, APIs, or fingerprints. Preserve canonical formatting so re-ingesting
+  overlapping exports remains idempotent.
 - **Verify financial invariants with property-based tests.** Cover parsing roundtrips,
   fixed-point algebra, rational scaling, double-entry balance checks, payroll clearing
   identities, and fingerprint determinism with Hypothesis tests in

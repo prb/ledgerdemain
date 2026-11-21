@@ -1,0 +1,118 @@
+# Ledgerdemain configuration template
+# Copy to `ledgerdemain.toml` and populate environment variables or values.
+
+[general]
+db_path = "data/ledgerdemain.db"
+inbox_dir = "inbox"
+rules_path = "rules.toml"
+currency = "USD"
+
+[accounting]
+# When true, Harvest invoices are mirrored into Wave via `invoiceCreate`.
+mirror_harvest_invoices = true
+
+# How deposits matched to Harvest invoices are staged when `mirror_harvest_invoices = true`:
+#   - "ar_clearing": push bank deposit against `invoice_payments_clearing` (then apply in Wave UI or clear)
+#   - "manual_ui_payment": do not push deposit via API; emit manual payment checklist for Wave UI
+#   - "direct_income": ONLY valid when `mirror_harvest_invoices = false` (cash-basis revenue recognition)
+mirrored_invoice_deposit_strategy = "ar_clearing"
+
+# Initial Wave invoice status on `invoiceCreate`: "SAVED" or "DRAFT"
+wave_invoice_create_status = "SAVED"
+
+# How matched Grasshopper -> Capital One credit card payments are handled:
+#   - "manual_transfer": hold both legs for Wave UI Transfer entry (recommended; Wave API lacks transfer mutation)
+#   - "clearing_account": push both legs against `cc_transfer_clearing` so the clearing account nets to $0.00
+transfer_strategy = "manual_transfer"
+
+# Date matching windows (calendar days +/-)
+deposit_match_window_days = 7
+payroll_match_window_days = 5
+transfer_match_window_days = 5
+
+# Minimum confidence score (0.0-1.0) to auto-confirm when `--confirm-high-confidence` is passed
+auto_confirm_threshold = 0.90
+
+[wave]
+endpoint = "https://gql.waveapps.com/graphql/public"
+business_id = "${WAVE_BUSINESS_ID}"
+access_token = "${WAVE_ACCESS_TOKEN}"
+default_product_name = "Consulting Services"
+
+[harvest]
+base_url = "https://api.harvestapp.com/v2"
+account_id = "${HARVEST_ACCOUNT_ID}"
+access_token = "${HARVEST_ACCESS_TOKEN}"
+user_agent = "Ledgerdemain (accounting@example.com)"
+
+[grasshopper]
+base_url = "https://api.grasshopper.bank/v1"
+# Optional single-account fallback; prefer [[grasshopper.accounts]] for Checking + Money Market:
+# account_id = "${GRASSHOPPER_ACCOUNT_ID}"
+access_token = "${GRASSHOPPER_ACCESS_TOKEN}"
+header_secret = "${GRASSHOPPER_HEADER_SECRET}"
+header_secret_name = "X-API-Secret"
+
+[[grasshopper.accounts]]
+account_key = "grasshopper_checking"
+account_id = "${GRASSHOPPER_CHECKING_ACCOUNT_ID}"
+acctid_last4 = "${GRASSHOPPER_CHECKING_LAST4}"
+
+[[grasshopper.accounts]]
+account_key = "grasshopper_money_market"
+account_id = "${GRASSHOPPER_MM_ACCOUNT_ID}"
+acctid_last4 = "${GRASSHOPPER_MM_LAST4}"
+
+[accounts]
+# Logical account keys -> Wave Account ID OR exact Wave Account Name (resolved via `wave_accounts` cache)
+
+# Anchor accounts (Cash/Bank Assets and Credit Card Liabilities)
+grasshopper_checking = "Grasshopper Checking"
+grasshopper_savings = "Grasshopper Savings"
+grasshopper_money_market = "Grasshopper Money Market"
+capital_one_card = "Capital One Credit Card"
+
+# Revenue & AR clearing
+revenue_default = "Sales"
+interest_income = "Interest Income"
+invoice_payments_clearing = "Invoice Payments Clearing"
+merchant_fees = "Merchant Processing Fees"
+
+# Payroll & Tax accounts
+payroll_gross_wages = "Payroll - Gross Wages"
+payroll_reimbursements = "Employee Reimbursements"
+payroll_employer_taxes = "Payroll - Employer Taxes"
+payroll_employer_benefits = "Payroll - Employer Benefits"
+payroll_taxes_payable = "Payroll Taxes Payable"
+payroll_benefits_payable = "Payroll Benefits Payable"
+payroll_processing_fees = "Payroll Processing Fees"
+contractors_expense = "Contractors"
+
+# Transfer clearing (only needed if transfer_strategy = "clearing_account")
+cc_transfer_clearing = "Credit Card Payment Clearing"
+bank_transfer_clearing = "Bank Transfer Clearing"
+
+# Operating expenses
+software_subscriptions = "Software & Subscriptions"
+cloud_hosting = "Cloud Hosting & Infrastructure"
+office_supplies = "Office Supplies"
+travel = "Travel"
+meals = "Meals & Entertainment"
+bank_fees = "Bank Service Charges"
+uncategorized_expense = "Uncategorized Expense"
+
+[patterns]
+gusto_payroll = ["(?i)\\bgusto\\b"]
+gusto_fee = ["(?i)gusto\\s*(fee|sub|invoice|monthly)"]
+grasshopper_cc_payment = ["(?i)capital\\s*one", "(?i)cap\\s*one", "(?i)crcardpmt"]
+capital_one_payment = [
+  "(?i)capital\\s*one\\s*(autopay|online|mobile)\\s*pymt",
+  "(?i)payment\\s*-?\\s*thank\\s*you",
+  "(?i)^autopay\\b",
+]
+bank_interest = ["(?i)\\binterest\\b"]
+
+[gusto.column_overrides]
+# Optional custom CSV column header overrides, e.g.:
+# check_date = "Pay Date"
+# gross_wages = "Total Gross Earnings"

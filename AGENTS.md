@@ -1,0 +1,4 @@
+# Project Steering & Conventions
+
+@[git-workflow](.kiro/steering/git-workflow.md)
+@[python-code-conventions](.kiro/steering/python-code-conventions.md)

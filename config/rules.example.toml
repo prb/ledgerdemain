@@ -1,0 +1,85 @@
+# Categorization rules evaluated in ascending `priority` order.
+# Copy to `rules.toml` and customize for your vendors and Chart of Accounts.
+
+[[rules]]
+name = "Gusto Monthly Fee"
+priority = 10
+source = "grasshopper"
+direction = "WITHDRAWAL"
+description_regex = "(?i)gusto\\s*(fee|sub|invoice|monthly)"
+account_key = "payroll_processing_fees"
+notes = "Gusto software subscription / processing fee"
+
+[[rules]]
+name = "Bank Interest Earned"
+priority = 15
+source = "grasshopper"
+direction = "DEPOSIT"
+description_regex = "(?i)\\binterest\\b"
+account_key = "interest_income"
+notes = "Savings / Money Market interest earned"
+
+[[rules]]
+name = "Cloud Hosting Vendors"
+priority = 20
+direction = "WITHDRAWAL"
+description_regex = "(?i)(amazon\\s*web\\s*services|aws\\b|google\\s*cloud|gcp\\b|github|digitalocean|cloudflare|vercel|heroku)"
+account_key = "cloud_hosting"
+
+[[rules]]
+name = "Software Subscriptions"
+priority = 30
+direction = "WITHDRAWAL"
+description_regex = "(?i)(figma|slack|notion|linear|1password|openai|anthropic|zoom|google\\s*workspace|microsoft\\s*365)"
+account_key = "software_subscriptions"
+
+[[rules]]
+name = "Software Refunds"
+priority = 35
+source = "capital_one"
+direction = "DEPOSIT"
+description_regex = "(?i)(figma|slack|notion|linear|github|aws|amazon\\s*web\\s*services)"
+account_key = "software_subscriptions"
+notes = "Vendor refund credited to expense account"
+
+[[rules]]
+name = "Bank & Wire Fees"
+priority = 40
+source = "grasshopper"
+direction = "WITHDRAWAL"
+description_regex = "(?i)(wire\\s*fee|service\\s*charge|bank\\s*fee|ach\\s*return\\s*fee)"
+account_key = "bank_fees"
+
+[[rules]]
+name = "Travel & Lodging"
+priority = 50
+direction = "WITHDRAWAL"
+description_regex = "(?i)(united\\s*air|delta\\s*air|american\\s*air|southwest|jetblue|alaska\\s*air|marriott|hilton|hyatt|airbnb|uber|lyft)"
+account_key = "travel"
+
+[[rules]]
+name = "Capital One Travel Fallback"
+priority = 80
+source = "capital_one"
+direction = "WITHDRAWAL"
+source_category_regex = "(?i)^(airfare|lodging|travel)$"
+description_regex = ".*"
+account_key = "travel"
+
+[[rules]]
+name = "Capital One Dining Fallback"
+priority = 85
+source = "capital_one"
+direction = "WITHDRAWAL"
+source_category_regex = "(?i)^(dining|restaurants?)$"
+description_regex = ".*"
+account_key = "meals"
+
+[[rules]]
+name = "Capital One Office & Merchandise Fallback"
+priority = 90
+source = "capital_one"
+direction = "WITHDRAWAL"
+source_category_regex = "(?i)^(office\\s*supplies|merchandise|other\\s*services)$"
+description_regex = ".*"
+account_key = "office_supplies"

@@ -1,0 +1,28 @@
+# Environment & Secrets
+.env
+.env.*
+ledgerdemain.toml
+rules.toml
+
+# Local Data & Inbox
+*.db
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite3
+data/
+inbox/
+.worktrees/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+dist/
+build/
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/

@@ -17,6 +17,7 @@ adapt the branch names accordingly.
 - **Prefer new commits over rewriting history.** Avoid `--amend`, `rebase`, force-push, `reset --hard`, and `clean -f` unless explicitly requested.
 - **Preserve hooks.** Do not skip hooks (`--no-verify`) unless explicitly asked.
 - **Push to a new branch, open a PR.** Push feature branches with upstream tracking and open a pull request for review rather than merging to `main` directly.
+- **Post PR reviews on GitHub.** When asked to review a pull request, submit the review on the PR via `gh pr review` (approving, requesting changes, or commenting as appropriate) in addition to summarizing findings in chat.
 
 ### Worktrees
 - **The primary checkout stays on `main`.** Update it only with `git fetch` followed by `git merge --ff-only origin/main`. Never commit, switch branches or edit files there.

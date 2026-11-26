@@ -83,6 +83,8 @@ payroll_gross_wages = "Payroll - Gross Wages"
 payroll_reimbursements = "Employee Reimbursements"
 payroll_employer_taxes = "Payroll - Employer Taxes"
 payroll_employer_benefits = "Payroll - Employer Benefits"
+officer_health_insurance = "Officer / Shareholder Health Insurance"
+officer_hsa = "Officer / Shareholder HSA"
 payroll_taxes_payable = "Payroll Taxes Payable"
 payroll_benefits_payable = "Payroll Benefits Payable"
 payroll_processing_fees = "Payroll Processing Fees"
@@ -124,6 +126,24 @@ source = "grasshopper"
 direction = "DEPOSIT"
 description_regex = "(?i)\\\\binterest\\\\b"
 account_key = "interest_income"
+
+[[rules]]
+name = "Officer / Shareholder Health Insurance (COBRA)"
+priority = 17
+source = "grasshopper"
+direction = "WITHDRAWAL"
+description_regex = "(?i)inspirafinancial"
+account_key = "officer_health_insurance"
+notes = "S-Corp officer/shareholder health insurance (COBRA)"
+
+[[rules]]
+name = "Officer / Shareholder HSA Contributions"
+priority = 18
+source = "grasshopper"
+direction = "WITHDRAWAL"
+description_regex = "(?i)hsa\\\\s*con\\\\s*t\\\\s*ribution"
+account_key = "officer_hsa"
+notes = "S-Corp officer/shareholder HSA contribution"
 
 [[rules]]
 name = "Cloud Hosting Vendors"

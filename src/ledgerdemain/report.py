@@ -2,12 +2,63 @@
 
 from __future__ import annotations
 
+import re
 from collections import defaultdict
 from typing import Any
 
 from ledgerdemain.config import AppConfig
 from ledgerdemain.db import LedgerDB
-from ledgerdemain.money import ZERO, Money, format_money
+from ledgerdemain.models import GustoPayrollRun
+from ledgerdemain.money import ZERO, Money, format_money, parse_money
+
+_HSA_COL_RE = re.compile(r"\bhsa\b")
+
+
+def _classify_imputed_gusto_benefits(
+    runs: list[GustoPayrollRun],
+) -> tuple[int, Money, Money, Money]:
+    """Return (imputed_run_count, health_insurance, hsa, other) from Gusto non-cash runs."""
+    imputed_count = 0
+    gusto_health = ZERO
+    gusto_hsa = ZERO
+    gusto_other = ZERO
+
+    for run in runs:
+        if run.run_type == "contractor" or not bool(run.raw.get("non_cash_imputed_benefits")):
+            continue
+        imputed_count += 1
+        rows = run.raw.get("rows")
+        itemized_found = False
+        if isinstance(rows, list):
+            for row in rows:
+                if not isinstance(row, dict):
+                    continue
+                for col, cell_val in row.items():
+                    if not isinstance(col, str) or not cell_val:
+                        continue
+                    col_lower = col.lower()
+                    if not (
+                        col_lower.endswith("(company contribution)")
+                        or col_lower.endswith("(employer contribution)")
+                    ):
+                        continue
+                    amt = parse_money(cell_val, ZERO)
+                    if amt == ZERO:
+                        continue
+                    itemized_found = True
+                    # Check HSA before generic "health" since "health savings account" contains it.
+                    if "health savings" in col_lower or _HSA_COL_RE.search(col_lower):
+                        gusto_hsa += amt
+                    elif any(
+                        kw in col_lower for kw in ("medical", "health", "cobra", "dental", "vision")
+                    ):
+                        gusto_health += amt
+                    else:
+                        gusto_other += amt
+        if not itemized_found:
+            gusto_other += run.employer_benefits
+
+    return imputed_count, gusto_health, gusto_hsa, gusto_other
 
 
 def build_report(
@@ -85,6 +136,9 @@ def build_report(
     staged_txs = db.list_staged_transactions(period_prefix=period)
     tax_payable_net = ZERO
     benefits_payable_net = ZERO
+    bank_health = ZERO
+    bank_hsa = ZERO
+    bank_unsplit = ZERO
     for stx in staged_txs:
         if stx.status not in {"staged", "approved", "pushed"}:
             continue
@@ -94,6 +148,18 @@ def build_report(
                 tax_payable_net += delta
             elif li.account_key == "payroll_benefits_payable":
                 benefits_payable_net += delta
+            elif li.account_key == "officer_health_insurance":
+                bank_health += delta
+            elif li.account_key == "officer_hsa":
+                bank_hsa += delta
+            elif li.account_key == "payroll_employer_benefits" and not stx.category_rule.startswith(
+                "gusto_"
+            ):
+                bank_unsplit += delta
+
+    imputed_run_count, gusto_health, gusto_hsa, gusto_other = _classify_imputed_gusto_benefits(runs)
+    gusto_total = gusto_health + gusto_hsa + gusto_other
+    bank_total = bank_health + bank_hsa + bank_unsplit
 
     # Manual Wave UI checklist
     manual_transfers = [
@@ -163,6 +229,26 @@ def build_report(
             "payroll_taxes_payable_net": format_money(tax_payable_net),
             "payroll_benefits_payable_net": format_money(benefits_payable_net),
         },
+        "scorp_benefits_tieout": {
+            "imputed_run_count": imputed_run_count,
+            "gusto_health_insurance": format_money(gusto_health),
+            "gusto_hsa": format_money(gusto_hsa),
+            "gusto_other": format_money(gusto_other),
+            "gusto_total": format_money(gusto_total),
+            "bank_health_insurance": format_money(bank_health),
+            "bank_hsa": format_money(bank_hsa),
+            "bank_unsplit_employer_benefits": format_money(bank_unsplit),
+            "bank_total": format_money(bank_total),
+            "health_insurance_variance": format_money(bank_health - gusto_health),
+            "hsa_variance": format_money(bank_hsa - gusto_hsa),
+            "total_variance": format_money(bank_total - gusto_total),
+            "in_balance": (
+                bank_total == gusto_total
+                and (
+                    bank_unsplit != ZERO or (bank_health == gusto_health and bank_hsa == gusto_hsa)
+                )
+            ),
+        },
         "wave_manual_checklist": {
             "transfers": manual_transfers,
             "invoice_payments": manual_invoice_payments,
@@ -220,6 +306,31 @@ def format_report_text(report: dict[str, Any]) -> str:
             f"Payroll Benefits Payable: ${pay['payroll_benefits_payable_net']}",
         ]
     )
+
+    tie = report["scorp_benefits_tieout"]
+    if tie["imputed_run_count"] > 0 or tie["bank_total"] != "0.00":
+        status_label = "[BALANCED]" if tie["in_balance"] else "[VARIANCE DETECTED]"
+        lines.extend(
+            [
+                f"   - S-Corp Imputed Benefits Tie-Out ({tie['imputed_run_count']} run(s)) "
+                f"{status_label}:",
+                f"     * Health Insurance: Gusto=${tie['gusto_health_insurance']} | "
+                f"Bank=${tie['bank_health_insurance']} | "
+                f"Variance=${tie['health_insurance_variance']}",
+                f"     * HSA: Gusto=${tie['gusto_hsa']} | Bank=${tie['bank_hsa']} | "
+                f"Variance=${tie['hsa_variance']}",
+            ]
+        )
+        if tie["bank_unsplit_employer_benefits"] != "0.00":
+            lines.append(
+                f"     * Unsplit Employer Benefits (Bank): ${tie['bank_unsplit_employer_benefits']}"
+            )
+        if tie["gusto_other"] != "0.00":
+            lines.append(f"     * Other Imputed Benefits (Gusto): ${tie['gusto_other']}")
+        lines.append(
+            f"     * Total: Gusto=${tie['gusto_total']} | Bank=${tie['bank_total']} | "
+            f"Variance=${tie['total_variance']}"
+        )
 
     chk = report["wave_manual_checklist"]
     lines.extend(["", "4. Wave Manual Action Checklist"])

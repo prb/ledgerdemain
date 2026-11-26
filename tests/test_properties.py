@@ -5,6 +5,8 @@ from __future__ import annotations
 import re
 from datetime import date, timedelta
 from fractions import Fraction
+from pathlib import Path
+from tempfile import TemporaryDirectory
 
 import pytest
 from hypothesis import given
@@ -13,15 +15,18 @@ from hypothesis import strategies as st
 from ledgerdemain.adapters.capital_one import CapitalOnePdfAdapter
 from ledgerdemain.adapters.ofx import OfxTransactionParser
 from ledgerdemain.categorize import Categorizer
-from ledgerdemain.config import CategorizationRule
-from ledgerdemain.db import make_bank_fingerprint
+from ledgerdemain.config import CategorizationRule, load_config
+from ledgerdemain.db import LedgerDB, make_bank_fingerprint
 from ledgerdemain.models import (
     BankTransaction,
     GustoPayrollRun,
     StagedLineItem,
+    StagedTransaction,
 )
 from ledgerdemain.money import ZERO, Money, format_money, parse_money
 from ledgerdemain.planner import BalanceError, validate_double_entry_balance
+from ledgerdemain.report import build_report
+from tests.fixtures import write_test_workspace_config
 
 _MONEY_POS = st.integers(min_value=1, max_value=5_000_000).map(Money)
 _MONEY_NONNEG = st.integers(min_value=0, max_value=2_000_000).map(Money)
@@ -473,3 +478,119 @@ def test_bank_transfer_clearing_nets_to_zero(amount: Money, clearing_normal: str
         amount if in_balance == "INCREASE" else -amount
     )
     assert signed_sum == ZERO
+
+
+@given(
+    gusto_cobra=_MONEY_NONNEG,
+    gusto_hsa=_MONEY_NONNEG,
+    bank_cobra=_MONEY_POS,
+    bank_hsa_net=_MONEY_POS,
+    hsa_return=_MONEY_NONNEG,
+)
+def test_scorp_benefits_tieout_variance_identity(
+    gusto_cobra: Money,
+    gusto_hsa: Money,
+    bank_cobra: Money,
+    bank_hsa_net: Money,
+    hsa_return: Money,
+) -> None:
+    with TemporaryDirectory() as tmp_str:
+        tmp_path = Path(tmp_str)
+        cfg_path = write_test_workspace_config(tmp_path, include_api_creds=False)
+        cfg = load_config(cfg_path)
+        db = LedgerDB(cfg.general.db_path)
+        db.init_schema()
+        try:
+            gusto_total = gusto_cobra + gusto_hsa
+            if gusto_total > ZERO:
+                db.upsert_gusto_payroll_runs(
+                    [
+                        GustoPayrollRun(
+                            fingerprint="prop-gusto-1",
+                            check_date="2026-11-02",
+                            pay_period_start="2026-11-01",
+                            pay_period_end="2026-11-02",
+                            run_type="off_cycle",
+                            gross_wages=gusto_total,
+                            reimbursements=ZERO,
+                            employee_taxes=ZERO,
+                            employer_taxes=ZERO,
+                            employee_benefits=ZERO,
+                            employer_benefits=gusto_total,
+                            net_pay=ZERO,
+                            employee_count=1,
+                            raw={
+                                "non_cash_imputed_benefits": True,
+                                "rows": [
+                                    {
+                                        "cobra medical (company contribution)": (
+                                            format_money(gusto_cobra)
+                                        ),
+                                        "fidelity hsa (company contribution)": (
+                                            format_money(gusto_hsa)
+                                        ),
+                                    }
+                                ],
+                            },
+                        )
+                    ]
+                )
+
+            bank_hsa_gross = bank_hsa_net + hsa_return
+            bank_items: list[tuple[str, Money, str, str]] = [
+                ("fp-cobra", bank_cobra, "WITHDRAWAL", "officer_health_insurance"),
+                ("fp-hsa-out", bank_hsa_gross, "WITHDRAWAL", "officer_hsa"),
+            ]
+            if hsa_return > ZERO:
+                bank_items.append(("fp-hsa-ret", hsa_return, "DEPOSIT", "officer_hsa"))
+
+            db.upsert_bank_transactions(
+                [
+                    BankTransaction(
+                        source="grasshopper",
+                        account_key="grasshopper_checking",
+                        external_id=None,
+                        fingerprint=fp,
+                        tx_date="2026-10-01",
+                        posted_date="2026-10-01",
+                        description=fp,
+                        normalized_description=fp,
+                        amount=amt,
+                        direction=direction,
+                    )
+                    for fp, amt, direction, _ in bank_items
+                ]
+            )
+            by_fp = {t.fingerprint: t.id for t in db.list_bank_transactions()}
+            for fp, amt, direction, acct in bank_items:
+                tx_id = by_fp[fp]
+                assert tx_id is not None
+                bal = "INCREASE" if direction == "WITHDRAWAL" else "DECREASE"
+                db.upsert_staged_transaction(
+                    StagedTransaction(
+                        external_id=fp,
+                        bank_tx_id=tx_id,
+                        tx_date="2026-10-01",
+                        description=fp,
+                        notes="",
+                        anchor_account_key="grasshopper_checking",
+                        anchor_wave_account_id=None,
+                        anchor_amount=amt,
+                        anchor_direction=direction,
+                        line_items=[StagedLineItem(acct, None, amt, bal)],
+                        category_rule="test_rule",
+                        status="pushed",
+                    )
+                )
+
+            tie = build_report(db, cfg)["scorp_benefits_tieout"]
+            health_var = parse_money(tie["health_insurance_variance"])
+            hsa_var = parse_money(tie["hsa_variance"])
+            total_var = parse_money(tie["total_variance"])
+
+            assert health_var == bank_cobra - gusto_cobra
+            assert hsa_var == bank_hsa_net - gusto_hsa
+            assert total_var == health_var + hsa_var
+            assert tie["in_balance"] is (bank_cobra == gusto_cobra and bank_hsa_net == gusto_hsa)
+        finally:
+            db.close()

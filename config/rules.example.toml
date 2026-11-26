@@ -20,6 +20,24 @@ account_key = "interest_income"
 notes = "Savings / Money Market interest earned"
 
 [[rules]]
+name = "Officer / Shareholder Health Insurance (COBRA)"
+priority = 17
+source = "grasshopper"
+direction = "WITHDRAWAL"
+description_regex = "(?i)inspirafinancial"
+account_key = "officer_health_insurance"
+notes = "S-Corp officer/shareholder health insurance (COBRA)"
+
+[[rules]]
+name = "Officer / Shareholder HSA Contributions"
+priority = 18
+source = "grasshopper"
+direction = "WITHDRAWAL"
+description_regex = "(?i)(hsa\\s*con\\s*tribution|hsa\\s*cont\\s*ribution)"
+account_key = "officer_hsa"
+notes = "S-Corp officer/shareholder HSA contribution"
+
+[[rules]]
 name = "Cloud Hosting Vendors"
 priority = 20
 direction = "WITHDRAWAL"

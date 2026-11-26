@@ -141,7 +141,7 @@ name = "Officer / Shareholder HSA Contributions"
 priority = 18
 source = "grasshopper"
 direction = "WITHDRAWAL"
-description_regex = "(?i)(hsa\\\\s*con\\\\s*tribution|hsa\\\\s*cont\\\\s*ribution)"
+description_regex = "(?i)hsa\\\\s*con\\\\s*t\\\\s*ribution"
 account_key = "officer_hsa"
 notes = "S-Corp officer/shareholder HSA contribution"
 

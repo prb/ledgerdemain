@@ -331,6 +331,11 @@ def format_report_text(report: dict[str, Any]) -> str:
             f"     * Total: Gusto=${tie['gusto_total']} | Bank=${tie['bank_total']} | "
             f"Variance=${tie['total_variance']}"
         )
+        if report["period"] != "all":
+            lines.append(
+                "     * Note: Gusto imputed runs filter by check_date while bank entries "
+                "filter by tx_date; cross-month timing reconciles across a full-year report."
+            )
 
     chk = report["wave_manual_checklist"]
     lines.extend(["", "4. Wave Manual Action Checklist"])

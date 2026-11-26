@@ -282,6 +282,10 @@ def test_scorp_benefits_tieout_flags_unjournaled_month_and_hsa_gap(tmp_path: Pat
         assert "Variance=$2522.29" in text
         assert "Variance=$-0.41" in text
         assert "Variance=$2521.88" in text
+        assert "cross-month timing reconciles" not in text
+
+        oct_text = format_report_text(build_report(db, cfg, period="2026-10"))
+        assert "cross-month timing reconciles" in oct_text
     finally:
         db.close()
 

@@ -21,6 +21,24 @@ from ledgerdemain.money import ZERO, Money, format_money, parse_money
 _INTEGRAL_CENTS_STR_RE = re.compile(r"^([+-]?\d+)(?:\.0+)?$")
 
 
+class GrasshopperParseError(ValueError):
+    """Raised when a Grasshopper API payload is not shaped as expected."""
+
+
+def _payload_items(payload: Any, keys: tuple[str, ...]) -> list[Any]:
+    """Return the item list from a list-or-object payload, rejecting any other shape."""
+    if isinstance(payload, list):
+        return payload
+    if not isinstance(payload, dict):
+        raise GrasshopperParseError(
+            f"Grasshopper response must be a list or object: {payload!r:.80}"
+        )
+    items: Any = next((payload[k] for k in keys if payload.get(k)), [])
+    if not isinstance(items, list):
+        raise GrasshopperParseError(f"Grasshopper items must be a list, got {type(items).__name__}")
+    return items
+
+
 def _parse_cents_field(value: Any) -> Money:
     """Parse an amount_cents field, accepting ints/integral floats and rejecting fractions."""
     if isinstance(value, bool):
@@ -85,10 +103,7 @@ class GrasshopperApiAdapter:
         """List accessible Grasshopper Bank accounts via Read-Only API."""
         url = f"{self.config.base_url}/accounts"
         payload = self.http.request_json("GET", url, headers=self._headers(require_account=False))
-        if isinstance(payload, list):
-            items = payload
-        else:
-            items = payload.get("accounts") or payload.get("data") or payload.get("items") or []
+        items = _payload_items(payload, ("accounts", "data", "items"))
 
         accounts: list[dict[str, Any]] = []
         for item in items:
@@ -169,15 +184,12 @@ class GrasshopperApiAdapter:
                 "GET", request_url, headers=self._headers(require_account=False), params=params
             )
 
+            items = _payload_items(payload, ("transactions", "data", "items"))
             if isinstance(payload, list):
-                items = payload
                 raw_next = None
                 next_cursor = None
                 next_page = None
             else:
-                items = (
-                    payload.get("transactions") or payload.get("data") or payload.get("items") or []
-                )
                 links = payload.get("links")
                 raw_next = links.get("next") if isinstance(links, dict) else None
                 next_cursor = payload.get("next_cursor")
@@ -186,7 +198,12 @@ class GrasshopperApiAdapter:
             for item in items:
                 if not isinstance(item, dict):
                     continue
-                tx = self._normalize_api_item(item, seen_counts, account_key=account_key)
+                try:
+                    tx = self._normalize_api_item(item, seen_counts, account_key=account_key)
+                except (KeyError, TypeError, AttributeError) as exc:
+                    raise GrasshopperParseError(
+                        f"Malformed Grasshopper transaction: {exc}"
+                    ) from exc
                 if tx is None:
                     continue
                 if norm_from and tx.posted_date < norm_from:

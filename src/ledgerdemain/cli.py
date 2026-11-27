@@ -19,6 +19,7 @@ from ledgerdemain.adapters.ofx import OfxStatement, OfxTransactionParser
 from ledgerdemain.categorize import Categorizer
 from ledgerdemain.config import AppConfig, ConfigError, load_config, load_rules
 from ledgerdemain.db import LedgerDB
+from ledgerdemain.http_client import HttpError
 from ledgerdemain.money import format_money
 from ledgerdemain.planner import Planner, validate_double_entry_balance
 from ledgerdemain.reconcile import Reconciler
@@ -479,12 +480,17 @@ def _ingest_inbox_files(
     per_file_prefix: str | None = None,
     per_file_suffix: str = "",
 ) -> tuple[int, int, int]:
-    """Ingest inbox files individually, recording ValueError failures without aborting."""
+    """Ingest inbox files individually, recording per-file failures without aborting.
+
+    ``ValueError`` (unparseable or invalid content) and ``OSError`` (unreadable file) are
+    logged to stderr and appended to ``failures``. ``sqlite3.Error`` is deliberately not caught
+    because a database fault is likely to affect every file, so it aborts the run.
+    """
     succeeded = total_r = total_i = 0
     for f in files:
         try:
             r, ins = ingest_fn(f)
-        except ValueError as exc:
+        except (ValueError, OSError) as exc:
             print(f"Error ingesting {source_label} ({f.name}): {exc}", file=sys.stderr)
             failures.append((f, str(exc)))
             continue
@@ -496,9 +502,29 @@ def _ingest_inbox_files(
     return succeeded, total_r, total_i
 
 
+def _run_api_step(
+    label: str,
+    step: Callable[[], None],
+    api_failures: list[tuple[str, str]],
+) -> None:
+    """Run one API ingest step, recording a failure instead of aborting the whole run.
+
+    ``HttpError`` (network or HTTP failure, including socket errors) and ``ValueError`` (a
+    malformed payload, raised by the adapters as a ``<Source>ParseError``) are logged to stderr
+    and appended to ``api_failures``. ``sqlite3.Error`` is not caught, for the same reason as in
+    ``_ingest_inbox_files``.
+    """
+    try:
+        step()
+    except (HttpError, ValueError) as exc:
+        print(f"Error ingesting {label}: {exc}", file=sys.stderr)
+        api_failures.append((label, str(exc)))
+
+
 def _cmd_ingest(args: argparse.Namespace) -> int:
     cfg, db = _open_context(Path(args.config))
     failures: list[tuple[Path, str]] = []
+    api_failures: list[tuple[str, str]] = []
     with db:
         target = args.ingest_target
         if target == "harvest":
@@ -587,8 +613,12 @@ def _cmd_ingest(args: argparse.Namespace) -> int:
 
         elif target == "all":
             if cfg.harvest.access_token and cfg.harvest.account_id:
-                c, i, p = _ingest_harvest_api(db, cfg, None)
-                print(f"Harvest API: {c} clients, {i} invoices, {p} payments.")
+
+                def _harvest_api_step() -> None:
+                    c, i, p = _ingest_harvest_api(db, cfg, None)
+                    print(f"Harvest API: {c} clients, {i} invoices, {p} payments.")
+
+                _run_api_step("Harvest API", _harvest_api_step, api_failures)
             for f in _inbox_files(cfg.general.inbox_dir, "harvest", (".csv",)):
                 cnt = _ingest_harvest_file(db, f)
                 print(f"Harvest CSV ({f.name}): {cnt} invoices.")
@@ -598,8 +628,12 @@ def _cmd_ingest(args: argparse.Namespace) -> int:
                 and any(a.account_id for a in cfg.grasshopper.configured_accounts)
             )
             if has_gh_api:
-                r, ins = _ingest_grasshopper_api(db, cfg, None, None)
-                print(f"Grasshopper API: read {r}, inserted {ins}.")
+
+                def _grasshopper_api_step() -> None:
+                    r, ins = _ingest_grasshopper_api(db, cfg, None, None)
+                    print(f"Grasshopper API: read {r}, inserted {ins}.")
+
+                _run_api_step("Grasshopper API", _grasshopper_api_step, api_failures)
             _ingest_inbox_files(
                 "Grasshopper",
                 _inbox_files(
@@ -636,6 +670,13 @@ def _cmd_ingest(args: argparse.Namespace) -> int:
             f"Ingest completed with {len(failures)} failed file(s): {names}",
             file=sys.stderr,
         )
+    if api_failures:
+        labels = ", ".join(label for label, _ in api_failures)
+        print(
+            f"Ingest completed with {len(api_failures)} failed API step(s): {labels}",
+            file=sys.stderr,
+        )
+    if failures or api_failures:
         return 2
     return 0
 

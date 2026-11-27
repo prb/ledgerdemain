@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import csv
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -16,6 +17,28 @@ from ledgerdemain.models import (
     HarvestPayment,
 )
 from ledgerdemain.money import ZERO, parse_money
+
+
+class HarvestParseError(ValueError):
+    """Raised when a Harvest API payload is not shaped as expected."""
+
+
+def _parse_api_items[T](data: Any, key: str, parse_one: Callable[[dict[str, Any]], T]) -> list[T]:
+    """Parse ``data[key]`` entry by entry, turning malformed payloads into HarvestParseError."""
+    if not isinstance(data, dict):
+        raise HarvestParseError(f"Harvest {key} response must be a JSON object, got {data!r:.80}")
+    raw_items = data.get(key, [])
+    if not isinstance(raw_items, list):
+        raise HarvestParseError(f"Harvest {key!r} must be a list, got {type(raw_items).__name__}")
+    parsed: list[T] = []
+    for idx, item in enumerate(raw_items):
+        try:
+            if not isinstance(item, dict):
+                raise TypeError(f"expected an object, got {type(item).__name__}")
+            parsed.append(parse_one(item))
+        except (KeyError, TypeError, AttributeError) as exc:
+            raise HarvestParseError(f"Malformed Harvest {key} entry #{idx}: {exc!r}") from exc
+    return parsed
 
 
 class HarvestApiAdapter:
@@ -50,16 +73,7 @@ class HarvestApiAdapter:
                 headers=self._headers(),
                 params={"page": page, "per_page": 100},
             )
-            for item in data.get("clients", []):
-                clients.append(
-                    HarvestClient(
-                        harvest_id=str(item["id"]),
-                        name=str(item.get("name", "")).strip(),
-                        currency=str(item.get("currency") or "USD"),
-                        is_active=bool(item.get("is_active", True)),
-                        raw=dict(item),
-                    )
-                )
+            clients.extend(_parse_api_items(data, "clients", self._parse_api_client))
             next_page = data.get("next_page")
             if not next_page:
                 break
@@ -86,8 +100,7 @@ class HarvestApiAdapter:
                 headers=self._headers(),
                 params=params,
             )
-            for item in data.get("invoices", []):
-                invoices.append(self._parse_api_invoice(item))
+            invoices.extend(_parse_api_items(data, "invoices", self._parse_api_invoice))
             next_page = data.get("next_page")
             if not next_page:
                 break
@@ -105,31 +118,45 @@ class HarvestApiAdapter:
                 headers=self._headers(),
                 params={"page": page, "per_page": 100},
             )
-            for item in data.get("invoice_payments", []):
-                paid_raw = item.get("paid_date") or item.get("paid_at") or ""
-                paid_date = parse_flexible_date(str(paid_raw))
-                gateway = item.get("payment_gateway")
-                gateway_name = (
-                    str(gateway.get("name", ""))
-                    if isinstance(gateway, dict)
-                    else str(gateway or "")
+            payments.extend(
+                _parse_api_items(
+                    data,
+                    "invoice_payments",
+                    lambda item: self._parse_api_payment(item, invoice_id),
                 )
-                payments.append(
-                    HarvestPayment(
-                        harvest_id=str(item["id"]),
-                        invoice_harvest_id=str(invoice_id),
-                        paid_date=paid_date,
-                        amount=parse_money(item.get("amount"), ZERO),
-                        payment_gateway=gateway_name,
-                        notes=str(item.get("notes") or ""),
-                        raw=dict(item),
-                    )
-                )
+            )
             next_page = data.get("next_page")
             if not next_page:
                 break
             page = int(next_page)
         return payments
+
+    @staticmethod
+    def _parse_api_client(item: dict[str, Any]) -> HarvestClient:
+        return HarvestClient(
+            harvest_id=str(item["id"]),
+            name=str(item.get("name", "")).strip(),
+            currency=str(item.get("currency") or "USD"),
+            is_active=bool(item.get("is_active", True)),
+            raw=dict(item),
+        )
+
+    @staticmethod
+    def _parse_api_payment(item: dict[str, Any], invoice_id: str) -> HarvestPayment:
+        paid_raw = item.get("paid_date") or item.get("paid_at") or ""
+        gateway = item.get("payment_gateway")
+        gateway_name = (
+            str(gateway.get("name", "")) if isinstance(gateway, dict) else str(gateway or "")
+        )
+        return HarvestPayment(
+            harvest_id=str(item["id"]),
+            invoice_harvest_id=str(invoice_id),
+            paid_date=parse_flexible_date(str(paid_raw)),
+            amount=parse_money(item.get("amount"), ZERO),
+            payment_gateway=gateway_name,
+            notes=str(item.get("notes") or ""),
+            raw=dict(item),
+        )
 
     @staticmethod
     def _parse_api_invoice(item: dict[str, Any]) -> HarvestInvoice:

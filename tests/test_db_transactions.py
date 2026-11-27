@@ -7,8 +7,8 @@ from pathlib import Path
 
 import pytest
 
-from ledgerdemain.adapters.capital_one import CapitalOneCsvAdapter
 from ledgerdemain.adapters.gusto import GustoPayrollCsvAdapter
+from ledgerdemain.adapters.ofx import OfxTransactionParser
 from ledgerdemain.cli import (
     _ingest_capital_one_file,
     _ingest_grasshopper_file,
@@ -239,13 +239,11 @@ def test_failed_harvest_api_batch_rolls_back_all_entities_and_cursor(tmp_path: P
 
 def test_failed_sync_cursor_update_rolls_back_bank_batch(tmp_path: Path) -> None:
     cfg = make_test_config(tmp_path, include_api_creds=False)
-    co_csv = tmp_path / "cap.csv"
-    co_csv.write_text(
-        "Transaction Date,Posted Date,Card No.,Description,Category,Debit,Credit\n"
-        "2026-01-03,2026-01-04,1234,AMAZON WEB SERVICES,Merchandise,142.50,\n",
-        encoding="utf-8",
+    co_ofx = tmp_path / "cap.ofx"
+    co_ofx.write_text(SAMPLE_CAPITAL_ONE_OFX_XML, encoding="utf-8")
+    txs = OfxTransactionParser().parse_file(
+        co_ofx, source="capital_one", account_key="capital_one_card"
     )
-    txs = CapitalOneCsvAdapter().parse_file(co_csv)
 
     with LedgerDB(cfg.general.db_path) as db:
         db.init_schema()

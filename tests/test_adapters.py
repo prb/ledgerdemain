@@ -15,7 +15,6 @@ from typing import Any
 import pytest
 
 from ledgerdemain.adapters.base import normalize_description
-from ledgerdemain.adapters.capital_one import CapitalOneCsvAdapter, CapitalOnePdfAdapter
 from ledgerdemain.adapters.grasshopper import (
     GrasshopperApiAdapter,
     GrasshopperCsvAdapter,
@@ -26,7 +25,7 @@ from ledgerdemain.adapters.harvest import HarvestApiAdapter, HarvestCsvAdapter, 
 from ledgerdemain.adapters.ofx import OfxParseError, OfxTransactionParser
 from ledgerdemain.categorize import Categorizer
 from ledgerdemain.cli import main
-from ledgerdemain.config import GrasshopperConfig, HarvestConfig
+from ledgerdemain.config import GrasshopperConfig, HarvestConfig, load_config
 from ledgerdemain.db import LedgerDB, make_bank_fingerprint
 from ledgerdemain.http_client import HttpClient, HttpError, HttpResponse
 from ledgerdemain.models import BankTransaction, HarvestInvoiceLineItem
@@ -34,16 +33,13 @@ from ledgerdemain.money import ZERO, Money
 from ledgerdemain.planner import Planner
 from ledgerdemain.reconcile import Reconciler
 from tests.fixtures import (
-    SAMPLE_CAPITAL_ONE_CSV,
     SAMPLE_CAPITAL_ONE_OFX_XML,
-    SAMPLE_CAPITAL_ONE_PDF_LINES,
     SAMPLE_GRASSHOPPER_CSV,
     SAMPLE_GUSTO_CONTRACTOR_CSV,
     SAMPLE_GUSTO_PAYROLL_CSV,
     SAMPLE_HARVEST_CSV,
     SAMPLE_OFX_SGML,
     RoutingMockTransport,
-    create_synthetic_pdf,
     make_test_config,
     write_test_workspace_config,
 )
@@ -217,43 +213,6 @@ def test_grasshopper_api_and_csv_and_ofx(tmp_path: Path) -> None:
     assert ofx_txs[1].direction == "DEPOSIT"
 
 
-def test_capital_one_csv_duplicates_and_idempotency(tmp_path: Path) -> None:
-    csv_path = tmp_path / "co.csv"
-    csv_path.write_text(SAMPLE_CAPITAL_ONE_CSV, encoding="utf-8")
-    txs = CapitalOneCsvAdapter().parse_file(csv_path)
-    assert len(txs) == 6
-    # Same-day identical coffees must get distinct fingerprints
-    assert txs[1].fingerprint != txs[2].fingerprint
-    assert txs[3].direction == "DEPOSIT"  # Figma refund Credit
-    assert txs[5].direction == "DEPOSIT"  # Autopay
-
-    with LedgerDB(tmp_path / "test.db") as db:
-        db.init_schema()
-        _, ins1 = db.upsert_bank_transactions(txs)
-        _, ins2 = db.upsert_bank_transactions(CapitalOneCsvAdapter().parse_file(csv_path))
-        assert ins1 == 6
-        assert ins2 == 0
-
-
-def test_capital_one_pdf_year_rollover_and_sections(tmp_path: Path) -> None:
-    pdf_path = tmp_path / "capone_jan2026.pdf"
-    create_synthetic_pdf(SAMPLE_CAPITAL_ONE_PDF_LINES, pdf_path)
-    txs = CapitalOnePdfAdapter().parse_file(pdf_path)
-
-    assert len(txs) == 4
-    assert txs[0].posted_date == "2025-12-21"
-    assert txs[0].direction == "DEPOSIT"
-    assert txs[0].amount == Money.parse("250.00")
-    assert txs[0].card_last4 == "4321"
-
-    assert txs[1].posted_date == "2026-01-02"
-    assert txs[1].direction == "DEPOSIT"
-    assert txs[2].posted_date == "2025-12-29"
-    assert txs[2].direction == "WITHDRAWAL"
-    assert txs[3].posted_date == "2026-01-05"
-    assert txs[3].direction == "WITHDRAWAL"
-
-
 def test_gusto_payroll_and_contractor_csv(tmp_path: Path) -> None:
     pay_path = tmp_path / "gusto_payroll.csv"
     pay_path.write_text(SAMPLE_GUSTO_PAYROLL_CSV, encoding="utf-8")
@@ -317,11 +276,19 @@ def test_capital_one_ofx_xml_statement_and_dtuser_and_card_last4(tmp_path: Path)
     assert payment.amount == Money.parse("500.00")
     assert payment.card_last4 == "9999"
 
-    # Re-ingesting via CapitalOneCsvAdapter (which delegates .ofx) is idempotent on FITID
+    # Re-parsing the same OFX file is idempotent on FITID
     with LedgerDB(tmp_path / "ofx.db") as db:
         db.init_schema()
-        _, ins1 = db.upsert_bank_transactions(CapitalOneCsvAdapter().parse_file(ofx_path))
-        _, ins2 = db.upsert_bank_transactions(CapitalOneCsvAdapter().parse_file(ofx_path))
+        _, ins1 = db.upsert_bank_transactions(
+            OfxTransactionParser().parse_file(
+                ofx_path, source="capital_one", account_key="capital_one_card"
+            )
+        )
+        _, ins2 = db.upsert_bank_transactions(
+            OfxTransactionParser().parse_file(
+                ofx_path, source="capital_one", account_key="capital_one_card"
+            )
+        )
         assert ins1 == 2
         assert ins2 == 0
 
@@ -1897,3 +1864,23 @@ def test_cli_ingest_all_records_malformed_api_payloads_and_continues(
     assert "Gusto (02_valid.csv): read 1, inserted 1 run(s)." in out
     with LedgerDB(tmp_path / "data/ledgerdemain.db") as db:
         assert len(db.list_gusto_payroll_runs()) == 1
+
+
+def test_cli_capital_one_rejects_csv_and_pdf_files(tmp_path: Path) -> None:
+    cfg_path = write_test_workspace_config(tmp_path, include_api_creds=False)
+    for name in ("co.csv", "co.pdf"):
+        path = tmp_path / name
+        path.write_text("not supported", encoding="utf-8")
+        code, _, err = _run_cli_main(cfg_path, ["ingest", "capital-one", "--file", str(path)])
+        assert code != 0
+        assert "Unsupported Capital One file type" in err
+
+    cfg = load_config(cfg_path)
+    inbox = cfg.general.inbox_dir / "capital_one"
+    inbox.mkdir(parents=True, exist_ok=True)
+    (inbox / "ignored.csv").write_text("x", encoding="utf-8")
+    (inbox / "ignored.pdf").write_text("x", encoding="utf-8")
+    code, out, err = _run_cli_main(cfg_path, ["ingest", "capital-one"])
+    assert code == 0
+    assert "Capital One: 0 file(s)" in out
+    assert err == ""

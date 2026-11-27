@@ -23,7 +23,7 @@ from ledgerdemain.money import format_money
 from ledgerdemain.planner import Planner, validate_double_entry_balance
 from ledgerdemain.reconcile import Reconciler
 from ledgerdemain.report import build_report, format_report_text
-from ledgerdemain.wave.client import WaveGraphQLClient
+from ledgerdemain.wave.client import WaveApiError, WaveGraphQLClient
 from ledgerdemain.wave.sync import WaveSyncService
 
 _DEFAULT_CONFIG_FALLBACK = """[general]
@@ -1051,6 +1051,6 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = parser.parse_args(argv)
     try:
         return int(args.func(args))
-    except (ConfigError, ValueError, KeyError, HttpError, GraphQLError) as exc:
+    except (ConfigError, ValueError, KeyError, HttpError, GraphQLError, WaveApiError) as exc:
         print(f"Error: {exc}", file=sys.stderr)
         return 2

@@ -31,6 +31,7 @@ from ledgerdemain.models import BankTransaction, HarvestInvoiceLineItem
 from ledgerdemain.money import ZERO, Money
 from ledgerdemain.planner import Planner
 from ledgerdemain.reconcile import Reconciler
+from ledgerdemain.wave.client import WaveApiError
 from tests.fixtures import (
     SAMPLE_CAPITAL_ONE_OFX_XML,
     SAMPLE_GUSTO_CONTRACTOR_CSV,
@@ -2079,3 +2080,23 @@ def test_grasshopper_api_accepts_zero_activity(
     fetch: Callable[[GrasshopperApiAdapter], list[object]], body: object
 ) -> None:
     assert fetch(_grasshopper_adapter(body)) == []
+
+
+def test_cli_push_wave_api_error_exits_2_without_traceback(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A rejected customer or product create escapes WaveSyncService.push as WaveApiError."""
+    cfg_path = write_test_workspace_config(tmp_path, include_api_creds=True)
+
+    def rejected(*_args: object, **_kwargs: object) -> object:
+        raise WaveApiError(
+            "customerCreate", [{"code": "INVALID", "path": ["input", "name"], "message": "bad"}]
+        )
+
+    monkeypatch.setattr("ledgerdemain.wave.sync.WaveSyncService.push", rejected)
+
+    code, _, err = _run_cli_main(cfg_path, ["push"])
+
+    assert code == 2
+    assert "Error: Wave customerCreate failed: [INVALID] input.name: bad" in err
+    assert "Traceback" not in err

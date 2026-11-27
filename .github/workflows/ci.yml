@@ -1,0 +1,47 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  checks:
+    name: Tests, lint and type checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      # Run every check through the locked environment with both extras installed,
+      # so the optional PDF libraries are exercised as well as the pure-Python fallback.
+      UV_LOCKED: "1"
+    steps:
+      # Third-party actions are pinned to commit SHAs (tag in the trailing comment).
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: astral-sh/setup-uv@1db35dd8eee11c5894872e0b383ae6c406cf738d # v10.4.0
+        with:
+          version: "0.13.8"
+
+      - name: Format check
+        run: uv run --extra dev --extra pdf ruff format --check
+
+      - name: Lint
+        if: ${{ !cancelled() }}
+        run: uv run --extra dev --extra pdf ruff check
+
+      - name: Type check
+        if: ${{ !cancelled() }}
+        run: uv run --extra dev --extra pdf mypy
+
+      - name: Tests
+        if: ${{ !cancelled() }}
+        run: uv run --extra dev --extra pdf pytest

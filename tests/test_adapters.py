@@ -42,31 +42,11 @@ from tests.fixtures import (
     SAMPLE_GUSTO_PAYROLL_CSV,
     SAMPLE_HARVEST_CSV,
     SAMPLE_OFX_SGML,
+    RoutingMockTransport,
     create_synthetic_pdf,
     make_test_config,
     write_test_workspace_config,
 )
-
-HandlerFn = Callable[[str, str, dict[str, str], bytes | None], HttpResponse]
-
-
-class _RoutingMockTransport:
-    def __init__(self, handler: HandlerFn) -> None:
-        self.handler = handler
-        self.requests: list[tuple[str, str, dict[str, str]]] = []
-
-    def request(
-        self,
-        method: str,
-        url: str,
-        headers: dict[str, str] | None = None,
-        body: bytes | None = None,
-        timeout: float = 30.0,
-    ) -> HttpResponse:
-        del timeout
-        hdrs = dict(headers or {})
-        self.requests.append((method, url, hdrs))
-        return self.handler(method, url, hdrs, body)
 
 
 def test_harvest_api_pagination_and_updated_since() -> None:
@@ -148,7 +128,7 @@ def test_harvest_api_pagination_and_updated_since() -> None:
             return HttpResponse(200, {}, json.dumps(pay_payload).encode("utf-8"))
         raise AssertionError(f"Unexpected URL: {url}")
 
-    transport = _RoutingMockTransport(handler)
+    transport = RoutingMockTransport(handler)
     adapter = HarvestApiAdapter(
         HarvestConfig(account_id="harv-1", access_token="tok-1"),
         http_client=HttpClient(transport=transport, sleep_fn=lambda _: None),
@@ -206,7 +186,7 @@ def test_grasshopper_api_and_csv_and_ofx(tmp_path: Path) -> None:
         }
         return HttpResponse(200, {}, json.dumps(page1).encode("utf-8"))
 
-    transport = _RoutingMockTransport(handler)
+    transport = RoutingMockTransport(handler)
     api = GrasshopperApiAdapter(
         GrasshopperConfig(
             account_id="acct-99",
@@ -1117,7 +1097,7 @@ def test_grasshopper_amount_cents_integral_float_and_non_integral_rejection() ->
         api = GrasshopperApiAdapter(
             GrasshopperConfig(account_id="acct-99", access_token="gh-tok", header_secret="sec-123"),
             http_client=HttpClient(
-                transport=_RoutingMockTransport(handler),
+                transport=RoutingMockTransport(handler),
                 sleep_fn=lambda _: None,
             ),
         )
@@ -1801,7 +1781,7 @@ def _api_client(body: object) -> HttpClient:
         del method, url, headers, payload
         return HttpResponse(200, {}, json.dumps(body).encode("utf-8"))
 
-    return HttpClient(transport=_RoutingMockTransport(handler), sleep_fn=lambda _: None)
+    return HttpClient(transport=RoutingMockTransport(handler), sleep_fn=lambda _: None)
 
 
 def _harvest_adapter(body: object) -> HarvestApiAdapter:
@@ -1902,7 +1882,7 @@ def test_cli_ingest_all_records_malformed_api_payloads_and_continues(
     real_http_client = HttpClient
 
     def mock_http_client(*_args: object, **_kwargs: object) -> HttpClient:
-        return real_http_client(transport=_RoutingMockTransport(handler), sleep_fn=lambda _: None)
+        return real_http_client(transport=RoutingMockTransport(handler), sleep_fn=lambda _: None)
 
     monkeypatch.setattr("ledgerdemain.adapters.harvest.HttpClient", mock_http_client)
     monkeypatch.setattr("ledgerdemain.adapters.grasshopper.HttpClient", mock_http_client)

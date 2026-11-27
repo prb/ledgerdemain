@@ -73,7 +73,7 @@ the `customerId` on income lines), and the payroll clearing accounts.
   `git show accrual-mirroring-last:src/ledgerdemain/planner.py`,
   `git show accrual-mirroring-last:src/ledgerdemain/wave/sync.py`,
   `git show accrual-mirroring-last:src/ledgerdemain/db.py`.
-- The pull request that closes #50 is the commit range that removed it. Its diff is the list of
+- Pull request #59 (which closes #50) removed it. Its diff is the list of
   pieces to put back.
 
 ### Restoring it

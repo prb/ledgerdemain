@@ -522,13 +522,14 @@ def _run_api_step(
 ) -> None:
     """Run one API ingest step, recording a failure instead of aborting the whole run.
 
-    ``HttpError`` (network or HTTP failure), ``ValueError`` (unparseable payload) and ``OSError``
-    are logged to stderr and appended to ``api_failures``. ``sqlite3.Error`` is not caught, for
-    the same reason as in ``_ingest_inbox_files``.
+    ``HttpError`` (network or HTTP failure, including socket errors) and ``ValueError`` (a
+    malformed payload, raised by the adapters as a ``<Source>ParseError``) are logged to stderr
+    and appended to ``api_failures``. ``sqlite3.Error`` is not caught, for the same reason as in
+    ``_ingest_inbox_files``.
     """
     try:
         step()
-    except (HttpError, ValueError, OSError) as exc:
+    except (HttpError, ValueError) as exc:
         print(f"Error ingesting {label}: {exc}", file=sys.stderr)
         api_failures.append((label, str(exc)))
 

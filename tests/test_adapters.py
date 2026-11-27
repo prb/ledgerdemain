@@ -16,9 +16,13 @@ import pytest
 
 from ledgerdemain.adapters.base import normalize_description
 from ledgerdemain.adapters.capital_one import CapitalOneCsvAdapter, CapitalOnePdfAdapter
-from ledgerdemain.adapters.grasshopper import GrasshopperApiAdapter, GrasshopperCsvAdapter
+from ledgerdemain.adapters.grasshopper import (
+    GrasshopperApiAdapter,
+    GrasshopperCsvAdapter,
+    GrasshopperParseError,
+)
 from ledgerdemain.adapters.gusto import GustoParseError, GustoPayrollCsvAdapter
-from ledgerdemain.adapters.harvest import HarvestApiAdapter, HarvestCsvAdapter
+from ledgerdemain.adapters.harvest import HarvestApiAdapter, HarvestCsvAdapter, HarvestParseError
 from ledgerdemain.adapters.ofx import OfxParseError, OfxTransactionParser
 from ledgerdemain.categorize import Categorizer
 from ledgerdemain.cli import main
@@ -915,6 +919,15 @@ def test_cli_ingest_all_continues_across_corrupt_inbox_ofx(tmp_path: Path) -> No
     assert {tx.external_id for tx in co_txs} == {"FIT-C1-001", "FIT-C1-002"}
 
 
+# An imputed-only run with no company contribution: fails Gusto's accounting cross-check.
+_CORRUPT_GUSTO_CSV = "\n".join(
+    [
+        "Check Date,Employee,Gross Earnings,Medical (Imputed),Net Pay",
+        "2026-05-01,Owner,2522.29,2522.29,0.00",
+    ]
+)
+
+
 def test_gusto_payroll_journal_multi_section_and_scorp_imputed_benefits(tmp_path: Path) -> None:
     cols = [
         "Last Name",
@@ -1145,7 +1158,7 @@ def test_grasshopper_amount_cents_integral_float_and_non_integral_rejection() ->
             ]
         )
 
-    with pytest.raises(TypeError, match="does not accept bool"):
+    with pytest.raises(GrasshopperParseError, match="does not accept bool"):
         fetch_payload(
             [
                 {
@@ -1627,12 +1640,7 @@ def test_gusto_cash_runs_with_imputed_benefits_tiny_net_and_corrupt_imputed_only
         assert tiny_runs[0].net_pay == Money.parse(cents_str)
 
     # 4. Corrupt imputed-only run missing company contribution fails loudly
-    corrupt_missing_er_ben = "\n".join(
-        [
-            "Check Date,Employee,Gross Earnings,Medical (Imputed),Net Pay",
-            "2026-05-01,Owner,2522.29,2522.29,0.00",
-        ]
-    )
+    corrupt_missing_er_ben = _CORRUPT_GUSTO_CSV
     p_corrupt = tmp_path / "corrupt_missing_er_ben.csv"
     p_corrupt.write_text(corrupt_missing_er_ben, encoding="utf-8")
     with pytest.raises(GustoParseError, match="imputed run"):
@@ -1641,12 +1649,7 @@ def test_gusto_cash_runs_with_imputed_benefits_tiny_net_and_corrupt_imputed_only
 
 def test_cli_gusto_ingest_file_failure_and_inbox_partial_success(tmp_path: Path) -> None:
     cfg_path = write_test_workspace_config(tmp_path, include_api_creds=False)
-    bad_csv = "\n".join(
-        [
-            "Check Date,Employee,Gross Earnings,Medical (Imputed),Net Pay",
-            "2026-05-01,Owner,2522.29,2522.29,0.00",
-        ]
-    )
+    bad_csv = _CORRUPT_GUSTO_CSV
 
     # (a) Explicit --file <bad.csv> fails immediately with exit code 2 and stderr error
     explicit_bad = tmp_path / "explicit_bad.csv"
@@ -1699,13 +1702,7 @@ def _write_gusto_inbox(root: Path, *, corrupt: bool = False) -> None:
     (root / "inbox/gusto").mkdir(parents=True, exist_ok=True)
     (root / "inbox/gusto/02_valid.csv").write_text(SAMPLE_GUSTO_PAYROLL_CSV, encoding="utf-8")
     if corrupt:
-        bad_csv = "\n".join(
-            [
-                "Check Date,Employee,Gross Earnings,Medical (Imputed),Net Pay",
-                "2026-05-01,Owner,2522.29,2522.29,0.00",
-            ]
-        )
-        (root / "inbox/gusto/01_corrupt.csv").write_text(bad_csv, encoding="utf-8")
+        (root / "inbox/gusto/01_corrupt.csv").write_text(_CORRUPT_GUSTO_CSV, encoding="utf-8")
 
 
 def test_cli_ingest_all_continues_after_api_failures(
@@ -1793,3 +1790,130 @@ def test_cli_gusto_inbox_continues_after_unreadable_csv(tmp_path: Path) -> None:
     assert "Gusto: 1 file(s), read 1, inserted 1 payroll run(s)." in out
     assert "Error ingesting Gusto (01_unreadable.csv):" in err
     assert "Ingest completed with 1 failed file(s): 01_unreadable.csv" in err
+
+
+def _api_client(body: object) -> HttpClient:
+    """HttpClient whose every response is the given JSON body."""
+
+    def handler(
+        method: str, url: str, headers: dict[str, str], payload: bytes | None
+    ) -> HttpResponse:
+        del method, url, headers, payload
+        return HttpResponse(200, {}, json.dumps(body).encode("utf-8"))
+
+    return HttpClient(transport=_RoutingMockTransport(handler), sleep_fn=lambda _: None)
+
+
+def _harvest_adapter(body: object) -> HarvestApiAdapter:
+    return HarvestApiAdapter(
+        HarvestConfig(account_id="harv-1", access_token="tok", user_agent="Ledgerdemain test"),
+        http_client=_api_client(body),
+    )
+
+
+def _grasshopper_adapter(body: object) -> GrasshopperApiAdapter:
+    return GrasshopperApiAdapter(
+        GrasshopperConfig(account_id="acct-99", access_token="gh-tok", header_secret="sec-123"),
+        http_client=_api_client(body),
+    )
+
+
+@pytest.mark.parametrize(
+    ("fetch", "body", "message"),
+    [
+        (lambda a: a.fetch_clients(), {"clients": [{"name": "No Id"}]}, "clients entry #0"),
+        (lambda a: a.fetch_clients(), ["not", "an", "object"], "must be a JSON object"),
+        (lambda a: a.fetch_clients(), {"clients": "oops"}, "must be a list"),
+        (lambda a: a.fetch_clients(), {"clients": ["scalar"]}, "clients entry #0"),
+        (lambda a: a.fetch_invoices(), {"invoices": [{"number": "1"}]}, "invoices entry #0"),
+        (
+            lambda a: a.fetch_invoices(),
+            {"invoices": [{"id": 1, "client": "Acme"}]},
+            "invoices entry #0",
+        ),
+        (
+            lambda a: a.fetch_payments_for_invoice("101"),
+            {"invoice_payments": [{"amount": "5.00"}]},
+            "invoice_payments entry #0",
+        ),
+        (lambda a: a.fetch_invoices(), 42, "must be a JSON object"),
+    ],
+)
+def test_harvest_api_rejects_malformed_payloads(
+    fetch: Callable[[HarvestApiAdapter], object], body: object, message: str
+) -> None:
+    with pytest.raises(HarvestParseError, match=message):
+        fetch(_harvest_adapter(body))
+
+
+@pytest.mark.parametrize(
+    ("fetch", "body", "message"),
+    [
+        (lambda a: a.fetch_transactions(), "oops", "must be a list or object"),
+        (lambda a: a.fetch_transactions(), 7, "must be a list or object"),
+        (lambda a: a.fetch_transactions(), {"transactions": "oops"}, "must be a list"),
+        (
+            lambda a: a.fetch_transactions(),
+            {
+                "transactions": [
+                    {
+                        "id": "x",
+                        "posted_date": "2026-01-10",
+                        "amount_cents": ["1"],
+                        "direction": "DEBIT",
+                    }
+                ]
+            },
+            "Malformed Grasshopper transaction",
+        ),
+        (lambda a: a.list_accounts(), "oops", "must be a list or object"),
+    ],
+)
+def test_grasshopper_api_rejects_malformed_payloads(
+    fetch: Callable[[GrasshopperApiAdapter], object], body: object, message: str
+) -> None:
+    with pytest.raises(GrasshopperParseError, match=message):
+        fetch(_grasshopper_adapter(body))
+
+
+def test_cli_ingest_all_records_malformed_api_payloads_and_continues(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cfg_path = write_test_workspace_config(tmp_path, include_api_creds=True)
+    _write_gusto_inbox(tmp_path)
+
+    def handler(method: str, url: str, headers: dict[str, str], body: bytes | None) -> HttpResponse:
+        del method, headers, body
+        if "harvest" in url:
+            payload: dict[str, object] = {"clients": [{"name": "Missing id"}]}
+        else:
+            payload = {
+                "transactions": [
+                    {
+                        "id": "gh-bool",
+                        "posted_date": "2026-01-10",
+                        "amount_cents": True,
+                        "direction": "DEBIT",
+                    }
+                ]
+            }
+        return HttpResponse(200, {}, json.dumps(payload).encode("utf-8"))
+
+    real_http_client = HttpClient
+
+    def mock_http_client(*_args: object, **_kwargs: object) -> HttpClient:
+        return real_http_client(transport=_RoutingMockTransport(handler), sleep_fn=lambda _: None)
+
+    monkeypatch.setattr("ledgerdemain.adapters.harvest.HttpClient", mock_http_client)
+    monkeypatch.setattr("ledgerdemain.adapters.grasshopper.HttpClient", mock_http_client)
+
+    code, out, err = _run_cli_main(cfg_path, ["ingest", "all"])
+
+    assert code == 2
+    assert "Error ingesting Harvest API: Malformed Harvest clients entry #0" in err
+    assert "Error ingesting Grasshopper API: Malformed Grasshopper transaction" in err
+    assert "Ingest completed with 2 failed API step(s): Harvest API, Grasshopper API" in err
+    assert "Traceback" not in err
+    assert "Gusto (02_valid.csv): read 1, inserted 1 run(s)." in out
+    with LedgerDB(tmp_path / "data/ledgerdemain.db") as db:
+        assert len(db.list_gusto_payroll_runs()) == 1

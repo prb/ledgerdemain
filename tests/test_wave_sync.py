@@ -14,7 +14,12 @@ from ledgerdemain.categorize import Categorizer
 from ledgerdemain.config import load_rules
 from ledgerdemain.db import LedgerDB
 from ledgerdemain.http_client import HttpClient, HttpResponse
-from ledgerdemain.models import BankTransaction, HarvestInvoice
+from ledgerdemain.models import (
+    BankTransaction,
+    HarvestInvoice,
+    StagedLineItem,
+    StagedTransaction,
+)
 from ledgerdemain.money import ZERO, Money
 from ledgerdemain.planner import Planner
 from ledgerdemain.reconcile import Reconciler
@@ -365,3 +370,55 @@ def test_unusable_200_on_customer_create_is_reused_after_sync_meta(
         assert second.errors == []
         assert second.transactions_pushed == 2
         assert len(_op_calls(wave, "CustomerCreate")) == 1
+
+
+def test_dry_run_reports_an_unresolved_account_instead_of_aborting(tmp_path: Path) -> None:
+    cfg = make_test_config(tmp_path)
+    with LedgerDB(cfg.general.db_path) as db:
+        _setup_staged_db(tmp_path, db)
+        ready = WaveSyncService(db, cfg).push(dry_run=True).transactions_pushed
+        assert ready == 2
+        db.upsert_bank_transactions(
+            [
+                BankTransaction(
+                    source="grasshopper",
+                    account_key="grasshopper_checking",
+                    external_id=None,
+                    fingerprint="fp-mystery",
+                    tx_date="2026-01-20",
+                    posted_date="2026-01-20",
+                    description="MYSTERY",
+                    normalized_description="MYSTERY",
+                    amount=Money.parse("10.00"),
+                    direction="WITHDRAWAL",
+                )
+            ]
+        )
+        bank_id = next(t.id for t in db.list_bank_transactions() if t.fingerprint == "fp-mystery")
+        assert bank_id is not None
+        staged_id = db.upsert_staged_transaction(
+            StagedTransaction(
+                external_id="ld:tx:mystery",
+                bank_tx_id=bank_id,
+                tx_date="2026-01-20",
+                description="MYSTERY",
+                notes="",
+                anchor_account_key="grasshopper_checking",
+                anchor_wave_account_id=None,
+                anchor_amount=Money.parse("10.00"),
+                anchor_direction="WITHDRAWAL",
+                line_items=[
+                    StagedLineItem("mystery_account", None, Money.parse("10.00"), "INCREASE")
+                ],
+                status="approved",
+            )
+        )
+
+        result = WaveSyncService(db, cfg).push(dry_run=True)
+
+        assert result.transactions_pushed == ready
+        assert result.transactions_failed == 1
+        assert any("mystery_account" in e for e in result.errors)
+        row = db.get_staged_transaction(staged_id)
+        assert row is not None
+        assert row.status == "approved"

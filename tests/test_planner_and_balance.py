@@ -2,24 +2,27 @@
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 import pytest
 
 from ledgerdemain.categorize import Categorizer
-from ledgerdemain.config import load_rules
+from ledgerdemain.config import CategorizationRule, load_rules
 from ledgerdemain.db import LedgerDB
 from ledgerdemain.models import (
     BankTransaction,
     GustoPayrollRun,
     HarvestInvoice,
     StagedLineItem,
+    WaveAccount,
 )
 from ledgerdemain.money import ZERO, Money
 from ledgerdemain.planner import (
     DEFAULT_NORMAL_BALANCE,
     BalanceError,
     Planner,
+    UnresolvedAccountError,
     validate_double_entry_balance,
 )
 from ledgerdemain.reconcile import Reconciler
@@ -333,3 +336,138 @@ def test_unpaired_capital_one_credit_uses_description_pattern_only(
         else:
             assert staged.category_rule == expected_rule
             assert staged.status == "needs_review"
+
+
+_EQUITY_AND_LOAN_ACCOUNTS = [
+    WaveAccount("w-cs", "Common Shares", "EQUITY", "COMMON_SHARES", "CREDIT"),
+    WaveAccount("w-sl", "Shareholder Loan", "LIABILITY", "OTHER_LIABILITY", "CREDIT"),
+]
+
+
+def _equity_and_loan_planner(tmp_path: Path) -> tuple[Planner, LedgerDB]:
+    """Bank rows for a share deposit, a personal charge and a loan repayment, plus one default."""
+    cfg = make_test_config(tmp_path)
+    cfg.accounts["common_shares"] = "Common Shares"
+    cfg.accounts["shareholder_loan"] = "Shareholder Loan"
+    rules = [
+        CategorizationRule("Shares", 10, "common_shares", re.compile("OPENING DEPOSIT")),
+        CategorizationRule("Charge", 10, "shareholder_loan", re.compile("PERSONAL CHARGE")),
+        CategorizationRule("Repayment", 10, "shareholder_loan", re.compile("LOAN REPAYMENT")),
+        CategorizationRule("Figma", 10, "software_subscriptions", re.compile("FIGMA")),
+    ]
+    db = LedgerDB(cfg.general.db_path)
+    db.init_schema()
+    db.upsert_bank_transactions(
+        [
+            _tx("grasshopper", "2026-11-05", "OPENING DEPOSIT", "100.00", "DEPOSIT", "fp-open"),
+            _tx("grasshopper", "2026-11-06", "PERSONAL CHARGE", "1104.40", "WITHDRAWAL", "fp-chg"),
+            _tx("grasshopper", "2026-11-07", "LOAN REPAYMENT", "1000.00", "DEPOSIT", "fp-rep"),
+            _tx("grasshopper", "2026-11-08", "FIGMA.COM", "15.00", "WITHDRAWAL", "fp-figma"),
+        ]
+    )
+    return Planner(db, cfg, Categorizer(rules)), db
+
+
+def test_plan_names_unresolved_accounts_and_stages_nothing_on_an_empty_cache(
+    tmp_path: Path,
+) -> None:
+    planner, db = _equity_and_loan_planner(tmp_path)
+    with db:
+        with pytest.raises(UnresolvedAccountError) as exc_info:
+            planner.build_plan()
+
+        assert exc_info.value.account_keys == ["common_shares", "shareholder_loan"]
+        message = str(exc_info.value)
+        assert "common_shares (mapped to 'Common Shares')" in message
+        assert "shareholder_loan (mapped to 'Shareholder Loan')" in message
+        assert "sync-meta" in message
+        # The transaction on a built-in account is not staged either: the plan is all or nothing.
+        assert db.list_staged_transactions() == []
+
+
+def test_plan_names_only_the_account_missing_from_a_partial_cache(tmp_path: Path) -> None:
+    planner, db = _equity_and_loan_planner(tmp_path)
+    with db:
+        db.upsert_wave_accounts(_EQUITY_AND_LOAN_ACCOUNTS[:1])
+
+        with pytest.raises(UnresolvedAccountError) as exc_info:
+            planner.build_plan()
+
+        assert exc_info.value.account_keys == ["shareholder_loan"]
+        assert db.list_staged_transactions() == []
+
+
+def test_plan_labels_credit_normal_accounts_from_the_synced_cache(tmp_path: Path) -> None:
+    planner, db = _equity_and_loan_planner(tmp_path)
+    with db:
+        db.upsert_wave_accounts(_EQUITY_AND_LOAN_ACCOUNTS)
+
+        summary = planner.build_plan()
+
+        assert summary.staged_transactions == 4
+        by_desc = {tx.description: tx for tx in db.list_staged_transactions()}
+        # A credit effect on a credit-normal account is an INCREASE, and a debit effect a DECREASE.
+        assert by_desc["OPENING DEPOSIT"].line_items[0].balance == "INCREASE"
+        assert by_desc["PERSONAL CHARGE"].line_items[0].balance == "DECREASE"
+        assert by_desc["LOAN REPAYMENT"].line_items[0].balance == "INCREASE"
+        assert by_desc["FIGMA.COM"].line_items[0].balance == "INCREASE"
+        assert {tx.status for tx in by_desc.values()} == {"staged"}
+
+
+def test_normal_balance_has_no_name_based_guess(tmp_path: Path) -> None:
+    cfg = make_test_config(tmp_path)
+    with LedgerDB(cfg.general.db_path) as db:
+        db.init_schema()
+        planner = Planner(db, cfg, Categorizer([]))
+
+        assert planner.normal_balance_for("software_subscriptions") == "DEBIT"
+        assert planner.normal_balance_for("revenue_default") == "CREDIT"
+        for key in ("not_an_account", "extra_payable", "revenue_other"):
+            with pytest.raises(UnresolvedAccountError, match=key):
+                planner.normal_balance_for(key)
+
+
+def test_unresolvable_accounts_of_finished_transactions_do_not_block_planning(
+    tmp_path: Path,
+) -> None:
+    planner, db = _equity_and_loan_planner(tmp_path)
+    with db:
+        db.upsert_wave_accounts(_EQUITY_AND_LOAN_ACCOUNTS)
+        planner.build_plan()
+        opening = next(
+            t for t in db.list_staged_transactions() if t.description == "OPENING DEPOSIT"
+        )
+        assert opening.id is not None
+        db.mark_staged_pushed(opening.id, "wave-tx-1")
+        # The Wave account is archived after year-end, so its key stops resolving.
+        db.upsert_wave_accounts(
+            [WaveAccount("w-cs", "Common Shares", "EQUITY", "COMMON_SHARES", "CREDIT", True)]
+        )
+        db.upsert_bank_transactions(
+            [_tx("grasshopper", "2026-11-09", "FIGMA.COM", "20.00", "WITHDRAWAL", "fp-figma-2")]
+        )
+
+        summary = planner.build_plan()
+
+        assert summary.staged_transactions == 4  # the three unfinished ones and the new one
+        after = db.get_staged_transaction(opening.id)
+        assert after is not None
+        assert after.status == "pushed"
+        assert len(db.list_staged_transactions()) == 5
+
+
+def test_unresolvable_account_of_an_unfinished_transaction_still_blocks_planning(
+    tmp_path: Path,
+) -> None:
+    planner, db = _equity_and_loan_planner(tmp_path)
+    with db:
+        db.upsert_wave_accounts(_EQUITY_AND_LOAN_ACCOUNTS)
+        planner.build_plan()
+        db.upsert_wave_accounts(
+            [WaveAccount("w-sl", "Shareholder Loan", "LIABILITY", "OTHER", "CREDIT", True)]
+        )
+
+        with pytest.raises(UnresolvedAccountError) as exc_info:
+            planner.build_plan()
+
+        assert exc_info.value.account_keys == ["shareholder_loan"]

@@ -6,7 +6,7 @@ import argparse
 import json
 import shutil
 import sys
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -326,15 +326,44 @@ def _ingest_grasshopper_file(
     account_key_override: str | None = None,
 ) -> tuple[int, int]:
     if path.suffix.lower() in {".ofx", ".qfx", ".qbo"}:
-        probe = OfxTransactionParser().parse_statement_file(
-            path, source="grasshopper", account_key="grasshopper_checking"
-        )
-        acct_key = account_key_override or cfg.grasshopper.resolve_account_key(
-            ofx_account_id=probe.account_id, filename=path.name
-        )
-        stmt = OfxTransactionParser().parse_statement_file(
-            path, source="grasshopper", account_key=acct_key
-        )
+        parser = OfxTransactionParser()
+        if account_key_override:
+            acct_key = account_key_override
+            expected_last4 = next(
+                (
+                    acct.acctid_last4
+                    for acct in cfg.grasshopper.configured_accounts
+                    if acct.account_key == account_key_override and acct.acctid_last4
+                ),
+                None,
+            )
+            stmt = parser.parse_statement_file(
+                path,
+                source="grasshopper",
+                account_key=acct_key,
+                expected_currency=cfg.general.currency,
+                expected_account_last4=expected_last4,
+            )
+        else:
+            probe = parser.parse_statement_file(
+                path,
+                source="grasshopper",
+                account_key="grasshopper_checking",
+                expected_currency=cfg.general.currency,
+            )
+            acct_key = cfg.grasshopper.resolve_account_key(
+                ofx_account_id=probe.account_id, filename=path.name
+            )
+            stmt = (
+                probe
+                if acct_key == "grasshopper_checking"
+                else parser.parse_statement_file(
+                    path,
+                    source="grasshopper",
+                    account_key=acct_key,
+                    expected_currency=cfg.general.currency,
+                )
+            )
         txs = stmt.transactions
         kind = "ofx"
         _print_ofx_summary(path, stmt, account_key=acct_key)
@@ -351,18 +380,23 @@ def _ingest_grasshopper_file(
     read_cnt, ins_cnt = db.upsert_bank_transactions(txs, batch_id=batch_id)
     db.update_batch_counts(batch_id, read_cnt, ins_cnt)
     return read_cnt, ins_cnt
-    db.update_batch_counts(batch_id, read_cnt, ins_cnt)
-    return read_cnt, ins_cnt
 
 
-def _ingest_capital_one_file(db: LedgerDB, path: Path) -> tuple[int, int]:
+def _ingest_capital_one_file(
+    db: LedgerDB,
+    path: Path,
+    expected_currency: str | None = "USD",
+) -> tuple[int, int]:
     suffix = path.suffix.lower()
     if suffix == ".pdf":
         txs = CapitalOnePdfAdapter().parse_file(path)
         kind = "pdf"
     elif suffix in {".ofx", ".qfx", ".qbo"}:
         stmt = OfxTransactionParser().parse_statement_file(
-            path, source="capital_one", account_key="capital_one_card"
+            path,
+            source="capital_one",
+            account_key="capital_one_card",
+            expected_currency=expected_currency,
         )
         txs = stmt.transactions
         kind = "ofx"
@@ -398,32 +432,6 @@ def _ingest_gusto_file(db: LedgerDB, cfg: AppConfig, path: Path, run_type: str) 
     read_cnt, ins_cnt = db.upsert_gusto_payroll_runs(runs, batch_id=batch_id)
     db.update_batch_counts(batch_id, read_cnt, ins_cnt)
     return read_cnt, ins_cnt
-
-
-def _ingest_gusto_inbox(
-    db: LedgerDB,
-    cfg: AppConfig,
-    run_type: str,
-    failures: list[tuple[Path, str]],
-    *,
-    per_file_stdout: bool = False,
-) -> tuple[int, int, int]:
-    """Ingest all Gusto CSV files from the inbox, recording per-file failures."""
-    files = _inbox_files(cfg.general.inbox_dir, "gusto", (".csv",))
-    succeeded = total_r = total_i = 0
-    for f in files:
-        try:
-            r, ins = _ingest_gusto_file(db, cfg, f, run_type)
-        except ValueError as exc:
-            print(f"Error ingesting Gusto ({f.name}): {exc}", file=sys.stderr)
-            failures.append((f, str(exc)))
-            continue
-        succeeded += 1
-        total_r += r
-        total_i += ins
-        if per_file_stdout:
-            print(f"Gusto ({f.name}): read {r}, inserted {ins} run(s).")
-    return succeeded, total_r, total_i
 
 
 def _inbox_files(inbox_dir: Path, subdir: str, extensions: tuple[str, ...]) -> list[Path]:
@@ -475,6 +483,32 @@ def _cmd_wave_sync_meta(args: argparse.Namespace) -> int:
     return 0
 
 
+def _ingest_inbox_files(
+    source_label: str,
+    files: Sequence[Path],
+    ingest_fn: Callable[[Path], tuple[int, int]],
+    failures: list[tuple[Path, str]],
+    *,
+    per_file_prefix: str | None = None,
+    per_file_suffix: str = "",
+) -> tuple[int, int, int]:
+    """Ingest inbox files individually, recording ValueError failures without aborting."""
+    succeeded = total_r = total_i = 0
+    for f in files:
+        try:
+            r, ins = ingest_fn(f)
+        except ValueError as exc:
+            print(f"Error ingesting {source_label} ({f.name}): {exc}", file=sys.stderr)
+            failures.append((f, str(exc)))
+            continue
+        succeeded += 1
+        total_r += r
+        total_i += ins
+        if per_file_prefix is not None:
+            print(f"{per_file_prefix} ({f.name}): read {r}, inserted {ins}{per_file_suffix}.")
+    return succeeded, total_r, total_i
+
+
 def _cmd_ingest(args: argparse.Namespace) -> int:
     cfg, db = _open_context(Path(args.config))
     failures: list[tuple[Path, str]] = []
@@ -512,34 +546,40 @@ def _cmd_ingest(args: argparse.Namespace) -> int:
                 files = _inbox_files(
                     cfg.general.inbox_dir, "grasshopper", (".csv", ".ofx", ".qfx", ".qbo")
                 )
-                total_r = total_i = 0
-                for f in files:
-                    r, ins = _ingest_grasshopper_file(
+                succeeded, total_r, total_i = _ingest_inbox_files(
+                    "Grasshopper",
+                    files,
+                    lambda f: _ingest_grasshopper_file(
                         db, cfg, f, account_key_override=acct_override
-                    )
-                    total_r += r
-                    total_i += ins
+                    ),
+                    failures,
+                )
                 print(
-                    f"Grasshopper inbox: {len(files)} file(s), read {total_r}, inserted {total_i}."
+                    f"Grasshopper inbox: {succeeded} file(s), read {total_r}, inserted {total_i}."
                 )
 
         elif target == "capital-one":
-            files = (
-                [Path(args.file)]
-                if args.file
-                else _inbox_files(
+            if args.file:
+                succeeded = 1
+                total_r, total_i = _ingest_capital_one_file(
+                    db, Path(args.file), expected_currency=cfg.general.currency
+                )
+            else:
+                files = _inbox_files(
                     cfg.general.inbox_dir,
                     "capital_one",
                     (".csv", ".pdf", ".ofx", ".qfx", ".qbo"),
                 )
-            )
-            total_r = total_i = 0
-            for f in files:
-                r, ins = _ingest_capital_one_file(db, f)
-                total_r += r
-                total_i += ins
+                succeeded, total_r, total_i = _ingest_inbox_files(
+                    "Capital One",
+                    files,
+                    lambda f: _ingest_capital_one_file(
+                        db, f, expected_currency=cfg.general.currency
+                    ),
+                    failures,
+                )
             print(
-                f"Capital One: {len(files)} file(s), read {total_r}, inserted {total_i} new tx(s)."
+                f"Capital One: {succeeded} file(s), read {total_r}, inserted {total_i} new tx(s)."
             )
 
         elif target == "gusto":
@@ -547,7 +587,12 @@ def _cmd_ingest(args: argparse.Namespace) -> int:
                 r, ins = _ingest_gusto_file(db, cfg, Path(args.file), args.run_type)
                 print(f"Gusto: 1 file(s), read {r}, inserted {ins} payroll run(s).")
             else:
-                succeeded, total_r, total_i = _ingest_gusto_inbox(db, cfg, args.run_type, failures)
+                succeeded, total_r, total_i = _ingest_inbox_files(
+                    "Gusto",
+                    _inbox_files(cfg.general.inbox_dir, "gusto", (".csv",)),
+                    lambda f: _ingest_gusto_file(db, cfg, f, args.run_type),
+                    failures,
+                )
                 print(
                     f"Gusto: {succeeded} file(s), read {total_r}, "
                     f"inserted {total_i} payroll run(s)."
@@ -568,22 +613,42 @@ def _cmd_ingest(args: argparse.Namespace) -> int:
             if has_gh_api:
                 r, ins = _ingest_grasshopper_api(db, cfg, None, None)
                 print(f"Grasshopper API: read {r}, inserted {ins}.")
-            for f in _inbox_files(
-                cfg.general.inbox_dir, "grasshopper", (".csv", ".ofx", ".qfx", ".qbo")
-            ):
-                r, ins = _ingest_grasshopper_file(db, cfg, f)
-                print(f"Grasshopper file ({f.name}): read {r}, inserted {ins}.")
+            _ingest_inbox_files(
+                "Grasshopper",
+                _inbox_files(
+                    cfg.general.inbox_dir, "grasshopper", (".csv", ".ofx", ".qfx", ".qbo")
+                ),
+                lambda f: _ingest_grasshopper_file(db, cfg, f),
+                failures,
+                per_file_prefix="Grasshopper file",
+            )
 
-            for f in _inbox_files(
-                cfg.general.inbox_dir, "capital_one", (".csv", ".pdf", ".ofx", ".qfx", ".qbo")
-            ):
-                r, ins = _ingest_capital_one_file(db, f)
-                print(f"Capital One ({f.name}): read {r}, inserted {ins}.")
+            _ingest_inbox_files(
+                "Capital One",
+                _inbox_files(
+                    cfg.general.inbox_dir,
+                    "capital_one",
+                    (".csv", ".pdf", ".ofx", ".qfx", ".qbo"),
+                ),
+                lambda f: _ingest_capital_one_file(db, f, expected_currency=cfg.general.currency),
+                failures,
+                per_file_prefix="Capital One",
+            )
 
-            _ingest_gusto_inbox(db, cfg, "regular", failures, per_file_stdout=True)
+            _ingest_inbox_files(
+                "Gusto",
+                _inbox_files(cfg.general.inbox_dir, "gusto", (".csv",)),
+                lambda f: _ingest_gusto_file(db, cfg, f, "regular"),
+                failures,
+                per_file_prefix="Gusto",
+                per_file_suffix=" run(s)",
+            )
     if failures:
         names = ", ".join(path.name for path, _ in failures)
-        print(f"Ingest completed with {len(failures)} failed file(s): {names}", file=sys.stderr)
+        print(
+            f"Ingest completed with {len(failures)} failed file(s): {names}",
+            file=sys.stderr,
+        )
         return 2
     return 0
 

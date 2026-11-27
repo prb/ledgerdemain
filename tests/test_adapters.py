@@ -1852,9 +1852,9 @@ def test_cli_init_does_not_create_grasshopper_inbox(tmp_path: Path) -> None:
 
 def test_cli_ingest_grasshopper_no_longer_accepts_file_options(tmp_path: Path) -> None:
     cfg_path = write_test_workspace_config(tmp_path, include_api_creds=False)
-    for option in ("--file", "--inbox", "--account-key"):
+    for option in ("--file", "--inbox", "--account-key", "--api"):
         argv = ["--config", str(cfg_path), "ingest", "grasshopper", option]
-        if option != "--inbox":
+        if option in ("--file", "--account-key"):
             argv.append("x")
         with contextlib.redirect_stderr(io.StringIO()), pytest.raises(SystemExit) as exc:
             main(argv)

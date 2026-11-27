@@ -22,10 +22,18 @@ class HarvestParseError(ValueError):
 
 
 def _parse_api_items[T](data: Any, key: str, parse_one: Callable[[dict[str, Any]], T]) -> list[T]:
-    """Parse ``data[key]`` entry by entry, turning malformed payloads into HarvestParseError."""
+    """Parse ``data[key]`` entry by entry, turning malformed payloads into HarvestParseError.
+
+    The key must be present: an error body, a renamed key or an empty response (which
+    ``request_json`` returns as ``{}``) is rejected rather than read as zero items.
+    """
     if not isinstance(data, dict):
         raise HarvestParseError(f"Harvest {key} response must be a JSON object, got {data!r:.80}")
-    raw_items = data.get(key, [])
+    if key not in data:
+        raise HarvestParseError(
+            f"Harvest {key} response has no {key!r} key (got keys: {_key_list(data)})"
+        )
+    raw_items = data[key]
     if not isinstance(raw_items, list):
         raise HarvestParseError(f"Harvest {key!r} must be a list, got {type(raw_items).__name__}")
     parsed: list[T] = []
@@ -37,6 +45,11 @@ def _parse_api_items[T](data: Any, key: str, parse_one: Callable[[dict[str, Any]
         except (KeyError, TypeError, AttributeError) as exc:
             raise HarvestParseError(f"Malformed Harvest {key} entry #{idx}: {exc!r}") from exc
     return parsed
+
+
+def _key_list(data: dict[str, Any]) -> str:
+    """Describe a payload's top-level keys for an error message."""
+    return ", ".join(sorted(map(str, data))[:10]) or "none"
 
 
 class HarvestApiAdapter:

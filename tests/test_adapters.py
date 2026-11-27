@@ -138,7 +138,7 @@ def test_harvest_api_pagination_and_updated_since() -> None:
     assert any("updated_since=2026-01-01T00%3A00%3A00Z" in u for _, u, _ in transport.requests)
 
 
-def test_grasshopper_api_and_ofx(tmp_path: Path) -> None:
+def test_grasshopper_api_fetch_transactions() -> None:
     def handler(method: str, url: str, headers: dict[str, str], body: bytes | None) -> HttpResponse:
         del method, body
         assert headers["X-API-Secret"] == "sec-123"
@@ -182,14 +182,6 @@ def test_grasshopper_api_and_ofx(tmp_path: Path) -> None:
     assert txs[0].direction == "DEPOSIT"
     assert txs[1].direction == "WITHDRAWAL"
     assert txs[1].amount == Money.parse("2000.50")
-
-    ofx_path = tmp_path / "gh.ofx"
-    ofx_path.write_text(SAMPLE_OFX_SGML, encoding="utf-8")
-    ofx_txs = OfxTransactionParser().parse_file(ofx_path, "grasshopper", "grasshopper_checking")
-    assert len(ofx_txs) == 2
-    assert ofx_txs[0].external_id == "OFX-GH-1"
-    assert ofx_txs[0].direction == "WITHDRAWAL"
-    assert ofx_txs[1].direction == "DEPOSIT"
 
 
 def test_gusto_payroll_and_contractor_csv(tmp_path: Path) -> None:
@@ -663,70 +655,11 @@ def test_ofx_expected_currency_and_account_last4_validation() -> None:
     assert stmt_masked.account_id == "0000-9999"
 
 
-def test_cli_ofx_validation_account_override_and_currency_mismatch(tmp_path: Path) -> None:
+def test_cli_capital_one_ofx_currency_mismatch(tmp_path: Path) -> None:
     cfg = make_test_config(tmp_path, include_api_creds=False)
     cfg_path = cfg.config_dir / "ledgerdemain.toml"
-    with cfg_path.open("a", encoding="utf-8") as fh:
-        fh.write(
-            """
-[[grasshopper.accounts]]
-account_key = "grasshopper_savings"
-acctid_last4 = "1111"
 
-[[grasshopper.accounts]]
-account_key = "grasshopper_money_market"
-acctid_last4 = "2222"
-"""
-        )
-
-    sav_ofx = tmp_path / "sav.ofx"
-    sav_ofx.write_text(
-        """<OFX><BANKMSGSRSV1><STMTTRNRS><STMTRS>
-<CURDEF>USD
-<BANKACCTFROM><ACCTID>00001111</BANKACCTFROM>
-<BANKTRANLIST>
-<STMTTRN><TRNTYPE>DEBIT<DTPOSTED>20261105<TRNAMT>-100.00<FITID>S-1<NAME>TEST</STMTTRN>
-</BANKTRANLIST>
-</STMTRS></STMTTRNRS></BANKMSGSRSV1></OFX>""",
-        encoding="utf-8",
-    )
-
-    # Forcing wrong --account-key fails loudly with exit code 2
-    err_buf = io.StringIO()
-    with contextlib.redirect_stderr(err_buf):
-        code = main(
-            [
-                "--config",
-                str(cfg_path),
-                "ingest",
-                "grasshopper",
-                "--file",
-                str(sav_ofx),
-                "--account-key",
-                "grasshopper_money_market",
-            ]
-        )
-    assert code == 2
-    assert "account mismatch" in err_buf.getvalue()
-
-    # Matching --account-key succeeds
-    out_buf = io.StringIO()
-    with contextlib.redirect_stdout(out_buf):
-        code = main(
-            [
-                "--config",
-                str(cfg_path),
-                "ingest",
-                "grasshopper",
-                "--file",
-                str(sav_ofx),
-                "--account-key",
-                "grasshopper_savings",
-            ]
-        )
-    assert code == 0
-
-    # Capital One OFX currency mismatch against config currency fails loudly
+    # An OFX currency that differs from the config currency fails loudly
     cfg_path.write_text(
         cfg_path.read_text(encoding="utf-8").replace('currency = "USD"', 'currency = "EUR"'),
         encoding="utf-8",
@@ -779,50 +712,11 @@ def test_cli_capital_one_inbox_continues_after_corrupt_ofx(tmp_path: Path) -> No
     assert "Ingest completed with" not in err_single
 
 
-def test_cli_grasshopper_inbox_continues_after_corrupt_ofx(tmp_path: Path) -> None:
-    cfg = make_test_config(tmp_path, include_api_creds=False)
-    cfg_path = cfg.config_dir / "ledgerdemain.toml"
-    gh_inbox = cfg.general.inbox_dir / "grasshopper"
-    gh_inbox.mkdir(parents=True, exist_ok=True)
-
-    corrupt_ofx = gh_inbox / "01_corrupt.ofx"
-    corrupt_ofx.write_text(
-        SAMPLE_OFX_SGML.split("</BANKTRANLIST>")[0],
-        encoding="utf-8",
-    )
-    (gh_inbox / "02_valid.ofx").write_text(SAMPLE_OFX_SGML, encoding="utf-8")
-
-    code, out, err = _run_cli_main(cfg_path, ["ingest", "grasshopper", "--inbox"])
-    assert code == 2
-    assert "Error ingesting Grasshopper (01_corrupt.ofx):" in err
-    assert "Ingest completed with 1 failed file(s): 01_corrupt.ofx" in err
-    assert "Grasshopper inbox: 1 file(s), read 2, inserted 2." in out
-
-    with LedgerDB(cfg.general.db_path) as db:
-        txs = db.list_bank_transactions(source="grasshopper")
-    assert {tx.external_id for tx in txs} == {"OFX-GH-1", "OFX-GH-2"}
-
-    code_single, _, err_single = _run_cli_main(
-        cfg_path, ["ingest", "grasshopper", "--file", str(corrupt_ofx)]
-    )
-    assert code_single == 2
-    assert "Error:" in err_single
-    assert "Ingest completed with" not in err_single
-
-
 def test_cli_ingest_all_continues_across_corrupt_inbox_ofx(tmp_path: Path) -> None:
     cfg = make_test_config(tmp_path, include_api_creds=False)
     cfg_path = cfg.config_dir / "ledgerdemain.toml"
-    gh_inbox = cfg.general.inbox_dir / "grasshopper"
     co_inbox = cfg.general.inbox_dir / "capital_one"
-    gh_inbox.mkdir(parents=True, exist_ok=True)
     co_inbox.mkdir(parents=True, exist_ok=True)
-
-    (gh_inbox / "01_bad_gh.ofx").write_text(
-        SAMPLE_OFX_SGML.split("</BANKTRANLIST>")[0],
-        encoding="utf-8",
-    )
-    (gh_inbox / "02_good_gh.ofx").write_text(SAMPLE_OFX_SGML, encoding="utf-8")
 
     (co_inbox / "01_bad_co.ofx").write_text(
         SAMPLE_CAPITAL_ONE_OFX_XML.split("</BANKTRANLIST>")[0],
@@ -832,16 +726,12 @@ def test_cli_ingest_all_continues_across_corrupt_inbox_ofx(tmp_path: Path) -> No
 
     code, out, err = _run_cli_main(cfg_path, ["ingest", "all"])
     assert code == 2
-    assert "Error ingesting Grasshopper (01_bad_gh.ofx):" in err
     assert "Error ingesting Capital One (01_bad_co.ofx):" in err
-    assert "Ingest completed with 2 failed file(s): 01_bad_gh.ofx, 01_bad_co.ofx" in err
-    assert "Grasshopper file (02_good_gh.ofx): read 2, inserted 2." in out
+    assert "Ingest completed with 1 failed file(s): 01_bad_co.ofx" in err
     assert "Capital One (02_good_co.ofx): read 2, inserted 2." in out
 
     with LedgerDB(cfg.general.db_path) as db:
-        gh_txs = db.list_bank_transactions(source="grasshopper")
         co_txs = db.list_bank_transactions(source="capital_one")
-    assert {tx.external_id for tx in gh_txs} == {"OFX-GH-1", "OFX-GH-2"}
     assert {tx.external_id for tx in co_txs} == {"FIT-C1-001", "FIT-C1-002"}
 
 
@@ -1887,7 +1777,6 @@ def test_cli_capital_one_rejects_csv_and_pdf_files(tmp_path: Path) -> None:
 
 _INBOX_SAMPLES: dict[str, tuple[str, str, str, str]] = {
     # inbox folder -> (ingest argv target, valid file name, valid content, "Unsupported" label)
-    "grasshopper": ("grasshopper", "valid.ofx", SAMPLE_OFX_SGML, "Grasshopper"),
     "capital_one": ("capital-one", "valid.ofx", SAMPLE_CAPITAL_ONE_OFX_XML, "Capital One"),
     "gusto": ("gusto", "valid.csv", SAMPLE_GUSTO_PAYROLL_CSV, "Gusto"),
 }
@@ -1919,7 +1808,7 @@ def test_cli_inbox_reports_unsupported_file_and_ingests_supported(
             assert len(db.list_bank_transactions(source=folder)) == 2
 
 
-@pytest.mark.parametrize("command", ["grasshopper", "capital-one", "gusto", "all"])
+@pytest.mark.parametrize("command", ["capital-one", "gusto", "all"])
 def test_cli_inbox_ignores_dotfiles_and_subdirectories(tmp_path: Path, command: str) -> None:
     cfg_path = write_test_workspace_config(tmp_path, include_api_creds=False)
     root = load_config(cfg_path).general.inbox_dir
@@ -1934,18 +1823,42 @@ def test_cli_inbox_ignores_dotfiles_and_subdirectories(tmp_path: Path, command: 
     assert err == ""
 
 
-def test_cli_ingest_all_reports_leftover_harvest_inbox_files(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    ("folder", "label"), [("harvest", "Harvest"), ("grasshopper", "Grasshopper")]
+)
+def test_cli_ingest_all_reports_leftover_api_only_inbox_files(
+    tmp_path: Path, folder: str, label: str
+) -> None:
     cfg_path = write_test_workspace_config(tmp_path, include_api_creds=False)
-    inbox = load_config(cfg_path).general.inbox_dir / "harvest"
+    inbox = load_config(cfg_path).general.inbox_dir / folder
     inbox.mkdir(parents=True, exist_ok=True)
-    (inbox / "invoices.csv").write_text("x", encoding="utf-8")
+    (inbox / "export.ofx").write_text("x", encoding="utf-8")
     (inbox / ".DS_Store").write_bytes(b"\x00")
 
     code, _, err = _run_cli_main(cfg_path, ["ingest", "all"])
 
     assert code == 2
-    assert "Error ingesting Harvest (invoices.csv): Harvest is ingested through the API" in err
-    assert "Ingest completed with 1 failed file(s): invoices.csv" in err
+    assert f"Error ingesting {label} (export.ofx): {label} is ingested through the API" in err
+    assert "Ingest completed with 1 failed file(s): export.ofx" in err
+
+
+def test_cli_init_does_not_create_grasshopper_inbox(tmp_path: Path) -> None:
+    code, _, err = _run_cli_main(tmp_path / "ledgerdemain.toml", ["init", "--dir", str(tmp_path)])
+
+    assert code == 0, err
+    assert (tmp_path / "inbox/capital_one").is_dir()
+    assert not (tmp_path / "inbox/grasshopper").exists()
+
+
+def test_cli_ingest_grasshopper_no_longer_accepts_file_options(tmp_path: Path) -> None:
+    cfg_path = write_test_workspace_config(tmp_path, include_api_creds=False)
+    for option in ("--file", "--inbox", "--account-key", "--api"):
+        argv = ["--config", str(cfg_path), "ingest", "grasshopper", option]
+        if option in ("--file", "--account-key"):
+            argv.append("x")
+        with contextlib.redirect_stderr(io.StringIO()), pytest.raises(SystemExit) as exc:
+            main(argv)
+        assert exc.value.code == 2
 
 
 def test_cli_gusto_file_rejects_non_csv_with_clear_error(tmp_path: Path) -> None:

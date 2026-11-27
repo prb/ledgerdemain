@@ -127,7 +127,6 @@ class GrasshopperAccountConfig:
 
     account_key: str
     account_id: str = ""
-    acctid_last4: str = ""
 
 
 @dataclass(slots=True)
@@ -153,42 +152,6 @@ class GrasshopperConfig:
                 )
             ]
         return []
-
-    def resolve_account_key(
-        self,
-        ofx_account_id: str = "",
-        filename: str = "",
-        default_key: str = "grasshopper_checking",
-    ) -> str:
-        """Resolve logical account_key from OFX account ID, filename, or single account."""
-        acct_id_clean = ofx_account_id.strip()
-        if acct_id_clean:
-            for acct in self.configured_accounts:
-                if acct.account_id and acct.account_id == acct_id_clean:
-                    return acct.account_key
-                if acct.acctid_last4 and (
-                    acct_id_clean == acct.acctid_last4 or acct_id_clean.endswith(acct.acctid_last4)
-                ):
-                    return acct.account_key
-
-        if filename:
-            stem = filename.lower()
-            if re.search(r"(^|[^a-z])(money[-_ ]?market|mm)([^a-z]|$)", stem):
-                for acct in self.configured_accounts:
-                    if "money_market" in acct.account_key or "mm" in acct.account_key:
-                        return acct.account_key
-            if re.search(r"(^|[^a-z])(savings|sav)([^a-z]|$)", stem):
-                for acct in self.configured_accounts:
-                    if "savings" in acct.account_key or "sav" in acct.account_key:
-                        return acct.account_key
-            if re.search(r"(^|[^a-z])(checking|chk)([^a-z]|$)", stem):
-                for acct in self.configured_accounts:
-                    if "checking" in acct.account_key:
-                        return acct.account_key
-
-        if len(self.configured_accounts) == 1:
-            return self.configured_accounts[0].account_key
-        return default_key
 
 
 @dataclass(slots=True)
@@ -324,7 +287,6 @@ def load_config(path: Path) -> AppConfig:
                 GrasshopperAccountConfig(
                     account_key=str(item["account_key"]).strip(),
                     account_id=str(item.get("account_id", "")).strip(),
-                    acctid_last4=str(item.get("acctid_last4", "")).strip(),
                 )
             )
     grasshopper = GrasshopperConfig(

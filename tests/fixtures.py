@@ -97,7 +97,7 @@ gusto_payroll = ["(?i)\\\\bgusto\\\\b"]
 gusto_fee = ["(?i)gusto\\\\s*(fee|sub|invoice|monthly)"]
 grasshopper_cc_payment = ["(?i)capital\\\\s*one", "(?i)cap\\\\s*one", "(?i)crcardpmt"]
 capital_one_payment = [
-  "(?i)capital\\\\s*one\\\\s*(autopay|online)\\\\s*pymt",
+  "(?i)capital\\\\s*one\\\\s*(autopay|online|mobile)\\\\s*pymt",
   "(?i)payment\\\\s*-?\\\\s*thank\\\\s*you",
   "(?i)^autopay\\\\b",
 ]

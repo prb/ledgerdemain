@@ -272,7 +272,7 @@ def test_cc_transfer_matching_and_unpaired_held(tmp_path: Path) -> None:
                     "500.00",
                     "DEPOSIT",
                     "co-cc1",
-                    "Payment/Credit",
+                    "CREDIT",
                 ),
                 _bank_tx(
                     "grasshopper",
@@ -287,3 +287,78 @@ def test_cc_transfer_matching_and_unpaired_held(tmp_path: Path) -> None:
         summary = Reconciler(db, cfg).reconcile_all(confirm_high_confidence=True)
         assert summary.cc_transfer_matches == 1
         assert summary.auto_confirmed == 1
+
+
+def test_cc_transfer_ignores_source_category_without_payment_description(tmp_path: Path) -> None:
+    cfg = make_test_config(tmp_path)
+    with LedgerDB(cfg.general.db_path) as db:
+        db.init_schema()
+        db.upsert_bank_transactions(
+            [
+                _bank_tx(
+                    "grasshopper",
+                    "2026-01-12",
+                    "CAPITAL ONE AUTOPAY ACH",
+                    "500.00",
+                    "WITHDRAWAL",
+                    "gh-cc1",
+                ),
+                _bank_tx(
+                    "capital_one",
+                    "2026-01-13",
+                    "ACME REFUND",
+                    "500.00",
+                    "DEPOSIT",
+                    "co-refund",
+                    "Payment/Credit",
+                ),
+            ]
+        )
+        summary = Reconciler(db, cfg).reconcile_all(confirm_high_confidence=True)
+        assert summary.cc_transfer_matches == 0
+
+
+def test_cc_transfer_matches_online_and_mobile_payment_descriptions(tmp_path: Path) -> None:
+    cfg = make_test_config(tmp_path)
+    with LedgerDB(cfg.general.db_path) as db:
+        db.init_schema()
+        db.upsert_bank_transactions(
+            [
+                _bank_tx(
+                    "grasshopper",
+                    "2026-01-12",
+                    "CAPITAL ONE AUTOPAY ACH",
+                    "500.00",
+                    "WITHDRAWAL",
+                    "gh-1",
+                ),
+                _bank_tx(
+                    "capital_one",
+                    "2026-01-12",
+                    "CAPITAL ONE ONLINE PYMT",
+                    "500.00",
+                    "DEPOSIT",
+                    "co-1",
+                    "CREDIT",
+                ),
+                _bank_tx(
+                    "grasshopper",
+                    "2026-02-12",
+                    "CAPITAL ONE AUTOPAY ACH",
+                    "300.00",
+                    "WITHDRAWAL",
+                    "gh-2",
+                ),
+                _bank_tx(
+                    "capital_one",
+                    "2026-02-12",
+                    "CAPITAL ONE MOBILE PYMT",
+                    "300.00",
+                    "DEPOSIT",
+                    "co-2",
+                    "CREDIT",
+                ),
+            ]
+        )
+        summary = Reconciler(db, cfg).reconcile_all(confirm_high_confidence=True)
+        assert summary.cc_transfer_matches == 2

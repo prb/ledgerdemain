@@ -1924,3 +1924,17 @@ def test_cli_ingest_all_reports_leftover_harvest_inbox_files(tmp_path: Path) -> 
     assert code == 2
     assert "Error ingesting Harvest (invoices.csv): Harvest is ingested through the API" in err
     assert "Ingest completed with 1 failed file(s): invoices.csv" in err
+
+
+def test_cli_gusto_file_rejects_non_csv_with_clear_error(tmp_path: Path) -> None:
+    cfg_path = write_test_workspace_config(tmp_path, include_api_creds=False)
+    not_csv = tmp_path / "payroll.xlsx"
+    not_csv.write_bytes(b"PK\x03\x04 not a csv")
+
+    code, _, err = _run_cli_main(cfg_path, ["ingest", "gusto", "--file", str(not_csv)])
+
+    assert code == 2
+    assert "Unsupported Gusto file type '.xlsx' (payroll.xlsx); use a CSV export." in err
+    assert "Ingest completed" not in err
+    with LedgerDB(tmp_path / "data/ledgerdemain.db") as db:
+        assert db.list_gusto_payroll_runs() == []

@@ -394,6 +394,10 @@ def _ingest_capital_one_file(
 
 
 def _ingest_gusto_file(db: LedgerDB, cfg: AppConfig, path: Path, run_type: str) -> tuple[int, int]:
+    if path.suffix.lower() != ".csv":
+        raise ValueError(
+            f"Unsupported Gusto file type {path.suffix!r} ({path.name}); use a CSV export."
+        )
     effective_type = (
         "contractor" if run_type == "contractor" or "contractor" in path.name.lower() else run_type
     )
@@ -405,14 +409,6 @@ def _ingest_gusto_file(db: LedgerDB, cfg: AppConfig, path: Path, run_type: str) 
         file_path=str(path),
         file_sha256=sha256_file(path),
     )
-
-
-def _ingest_gusto_inbox_file(
-    db: LedgerDB, cfg: AppConfig, path: Path, run_type: str
-) -> tuple[int, int]:
-    if path.suffix.lower() != ".csv":
-        raise ValueError(f"Unsupported Gusto file type {path.suffix!r}; use a CSV export.")
-    return _ingest_gusto_file(db, cfg, path, run_type)
 
 
 def _reject_harvest_inbox_file(path: Path) -> tuple[int, int]:
@@ -591,7 +587,7 @@ def _cmd_ingest(args: argparse.Namespace) -> int:
                 succeeded, total_r, total_i = _ingest_inbox_files(
                     "Gusto",
                     _inbox_files(cfg.general.inbox_dir, "gusto"),
-                    lambda f: _ingest_gusto_inbox_file(db, cfg, f, args.run_type),
+                    lambda f: _ingest_gusto_file(db, cfg, f, args.run_type),
                     failures,
                 )
                 print(
@@ -638,7 +634,7 @@ def _cmd_ingest(args: argparse.Namespace) -> int:
             _ingest_inbox_files(
                 "Gusto",
                 _inbox_files(cfg.general.inbox_dir, "gusto"),
-                lambda f: _ingest_gusto_inbox_file(db, cfg, f, "regular"),
+                lambda f: _ingest_gusto_file(db, cfg, f, "regular"),
                 failures,
                 per_file_prefix="Gusto",
                 per_file_suffix=" run(s)",

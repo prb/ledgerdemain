@@ -1,6 +1,6 @@
 # Ledgerdemain
 
-**Ledgerdemain** integrates **Harvest** (invoices & payments), **Gusto** (payroll & tax breakdowns), **Capital One** (credit card OFX statements), and **Grasshopper Bank** (Read-Only API + OFX/QFX/QBO exports) with **Wave Accounting** (GraphQL API) through a local SQLite staging, reconciliation, review, and dry-run/live push pipeline.
+**Ledgerdemain** integrates **Harvest** (invoices & payments), **Gusto** (payroll & tax breakdowns), **Capital One** (credit card OFX statements), and **Grasshopper Bank** (Read-Only API) with **Wave Accounting** (GraphQL API) through a local SQLite staging, reconciliation, review, and dry-run/live push pipeline.
 
 ## Why a Local Staging & Reconciliation Ledger?
 
@@ -70,10 +70,10 @@ uv run --extra dev pytest -v
 - Generate a Personal Access Token and Account ID in Harvest Developers (`https://id.getharvest.com/developers`).
 - Set `HARVEST_ACCOUNT_ID` and `HARVEST_ACCESS_TOKEN` in `.env`, plus `harvest.user_agent` with your app name and contact email.
 
-### 3. Grasshopper Bank (Multi-Account Read-Only API or OFX)
+### 3. Grasshopper Bank (Multi-Account Read-Only API)
 - In Grasshopper online banking, go to **Settings -> API Banking**, accept the terms, **whitelist your static IP address**, and save both the Bearer Token (`GRASSHOPPER_ACCESS_TOKEN`) and Header Secret (`GRASSHOPPER_HEADER_SECRET`) in `.env`.
-- Run `uv run ledgerdemain grasshopper list-accounts` to retrieve the `id` and `last4` for both your **Savings** and **Money Market** accounts, then map them under `[[grasshopper.accounts]]` in `ledgerdemain.toml` (`grasshopper_savings`, `grasshopper_money_market`).
-- Or export OFX/QFX/QBO statements to `inbox/grasshopper/`; OFX exports automatically match each account via `<BANKACCTFROM>/<ACCTID>`, and internal Savings <-> Money Market transfers reconcile automatically.
+- Run `uv run ledgerdemain grasshopper list-accounts` to retrieve the `id` for both your **Savings** and **Money Market** accounts, then map them under `[[grasshopper.accounts]]` in `ledgerdemain.toml` (`grasshopper_savings`, `grasshopper_money_market`).
+- Grasshopper is ingested only through the API. Internal Savings <-> Money Market transfers reconcile automatically. On the first sync in a fresh database, pass `ingest grasshopper --from YYYY-MM-DD` to set how far back to go. Files left in `inbox/grasshopper/` are reported as failures by `ingest all`.
 
 ### 4. Capital One Credit Card (OFX)
 - Export **OFX (OFX 2.x XML / Quicken / QFX / QBO)** from Capital One and place it in `inbox/capital_one/` (or pass `--file`). Capital One OFX exports include unique `<FITID>` IDs for duplicate-safe overlapping downloads, both transaction date (`<DTUSER>`) and posted date (`<DTPOSTED>`), card last-4 (`<ACCTID>`), and statement `<LEDGERBAL>`.
@@ -110,7 +110,7 @@ uv run --extra dev pytest -v
 | `ledgerdemain wave list-businesses` | List Wave businesses accessible to your token |
 | `ledgerdemain wave sync-meta` | Cache Wave Chart of Accounts, customers, and products |
 | `ledgerdemain grasshopper list-accounts` | List Grasshopper Bank accounts accessible to your token |
-| `ledgerdemain ingest harvest\|grasshopper\|capital-one\|gusto\|all` | Ingest APIs or local OFX/CSV files |
+| `ledgerdemain ingest harvest\|grasshopper\|capital-one\|gusto\|all` | Ingest from the Harvest and Grasshopper APIs, or from Capital One OFX and Gusto CSV files (`all` also reports leftover files in `inbox/harvest/` and `inbox/grasshopper/`) |
 | `ledgerdemain reconcile [--confirm-high-confidence]` | Match deposits, Gusto debits, and CC transfers |
 | `ledgerdemain plan` | Stage balanced Wave transactions and mirrored invoices |
 | `ledgerdemain review [--status ...] [--json]` | Inspect staged, review-needed, manual, or failed items |

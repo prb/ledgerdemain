@@ -56,12 +56,10 @@ header_secret_name = "X-API-Secret"
 [[grasshopper.accounts]]
 account_key = "grasshopper_checking"
 account_id = "${GRASSHOPPER_CHECKING_ACCOUNT_ID}"
-acctid_last4 = "${GRASSHOPPER_CHECKING_LAST4}"
 
 [[grasshopper.accounts]]
 account_key = "grasshopper_money_market"
 account_id = "${GRASSHOPPER_MM_ACCOUNT_ID}"
-acctid_last4 = "${GRASSHOPPER_MM_LAST4}"
 
 [accounts]
 # Logical account keys -> Wave Account ID OR exact Wave Account Name (resolved via `wave_accounts` cache)

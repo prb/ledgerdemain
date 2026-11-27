@@ -29,7 +29,7 @@ def write_test_workspace_config(
     wave_tok = "wave-secret-token" if include_api_creds else ""
     harv_acct = "harv-acct-1" if include_api_creds else ""
     harv_tok = "harv-secret-token" if include_api_creds else ""
-    gh_acct = "gh-acct-1" if include_api_creds else ""
+    gh_acct = E2E_GRASSHOPPER_ACCOUNT_ID if include_api_creds else ""
     gh_tok = "gh-secret-token" if include_api_creds else ""
     gh_sec = "gh-header-secret" if include_api_creds else ""
 
@@ -626,22 +626,58 @@ def build_ofx_xml(section: str, acct_from: str, acct_id: str, entries: list[OfxE
 """
 
 
-# E2E workflow data as OFX: one Grasshopper checking account (ACCTID 9012) and two Capital One
-# cards (ACCTID 1234 and 4321). TRNTYPE is DEBIT or CREDIT, as in a real bank file, so no merchant
-# category is available to rules.
-E2E_GRASSHOPPER_OFX = build_ofx_xml(
-    "BANK",
-    "BANKACCTFROM",
-    "9012",
-    [
-        ("20260105", "20260105", "3000.00", "ACH DEPOSIT ACME CORP INV-1001", "GH-1"),
-        ("20260109", "20260109", "-45.00", "GUSTO FEE MONTHLY SUBSCRIPTION", "GH-2"),
-        ("20260110", "20260110", "-3705.75", "GUSTO PAY 260110", "GH-3"),
-        ("20260110", "20260110", "-1315.50", "GUSTO TAX 260110", "GH-4"),
-        ("20260112", "20260112", "-500.00", "CAPITAL ONE AUTOPAY ACH", "GH-5"),
-        ("20260115", "20260115", "1940.00", "STRIPE TRANSFER WIDGET LABS", "GH-6"),
+# E2E workflow data. Grasshopper checking comes from the API (the account id that
+# ``write_test_workspace_config`` configures), served as a transactions payload. Capital One comes
+# from OFX files for two cards (ACCTID 1234 and 4321). TRNTYPE is DEBIT or CREDIT, as in a real
+# bank file, so no merchant category is available to rules.
+E2E_GRASSHOPPER_ACCOUNT_ID = "gh-acct-1"
+E2E_GRASSHOPPER_TRANSACTIONS: dict[str, Any] = {
+    "transactions": [
+        {
+            "id": "GH-1",
+            "posted_date": "2026-01-05",
+            "description": "ACH DEPOSIT ACME CORP INV-1001",
+            "amount": "3000.00",
+            "direction": "CREDIT",
+        },
+        {
+            "id": "GH-2",
+            "posted_date": "2026-01-09",
+            "description": "GUSTO FEE MONTHLY SUBSCRIPTION",
+            "amount": "45.00",
+            "direction": "DEBIT",
+        },
+        {
+            "id": "GH-3",
+            "posted_date": "2026-01-10",
+            "description": "GUSTO PAY 260110",
+            "amount": "3705.75",
+            "direction": "DEBIT",
+        },
+        {
+            "id": "GH-4",
+            "posted_date": "2026-01-10",
+            "description": "GUSTO TAX 260110",
+            "amount": "1315.50",
+            "direction": "DEBIT",
+        },
+        {
+            "id": "GH-5",
+            "posted_date": "2026-01-12",
+            "description": "CAPITAL ONE AUTOPAY ACH",
+            "amount_cents": 50000,
+            "direction": "DEBIT",
+        },
+        {
+            "id": "GH-6",
+            "posted_date": "2026-01-15",
+            "description": "STRIPE TRANSFER WIDGET LABS",
+            "amount": "1940.00",
+            "direction": "CREDIT",
+        },
     ],
-)
+    "next_page": None,
+}
 
 E2E_CAPITAL_ONE_JAN_OFX = build_ofx_xml(
     "CC",

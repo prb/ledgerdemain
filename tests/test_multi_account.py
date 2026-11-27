@@ -67,12 +67,10 @@ access_token = "${TEST_GH_TOK}"
 [[grasshopper.accounts]]
 account_key = "grasshopper_savings"
 account_id = "${TEST_GH_SAV}"
-acctid_last4 = "1111"
 
 [[grasshopper.accounts]]
 account_key = "grasshopper_money_market"
 account_id = "${TEST_GH_MM}"
-acctid_last4 = "2222"
 """,
         encoding="utf-8",
     )
@@ -157,8 +155,8 @@ def test_grasshopper_list_accounts_and_multi_account_fetch() -> None:
         access_token="gh-tok",
         header_secret="sec",
         accounts=[
-            GrasshopperAccountConfig("grasshopper_savings", "sav-1", "1111"),
-            GrasshopperAccountConfig("grasshopper_money_market", "mm-1", "2222"),
+            GrasshopperAccountConfig("grasshopper_savings", "sav-1"),
+            GrasshopperAccountConfig("grasshopper_money_market", "mm-1"),
         ],
     )
     adapter = GrasshopperApiAdapter(
@@ -263,8 +261,8 @@ def test_grasshopper_live_narmi_schema_cents_settled_at_and_links_pagination() -
         base_url="https://api.grasshopper.bank/v1",
         access_token="gh-synth-tok",
         accounts=[
-            GrasshopperAccountConfig("grasshopper_checking", "chk-synth-1", "4101"),
-            GrasshopperAccountConfig("grasshopper_money_market", "mm-synth-2", "4202"),
+            GrasshopperAccountConfig("grasshopper_checking", "chk-synth-1"),
+            GrasshopperAccountConfig("grasshopper_money_market", "mm-synth-2"),
         ],
     )
     adapter = GrasshopperApiAdapter(
@@ -306,62 +304,6 @@ def test_grasshopper_live_narmi_schema_cents_settled_at_and_links_pagination() -
     assert txs[2].posted_date == "2026-11-12"
     assert txs[2].amount == Money.parse("4.50")
     assert txs[2].direction == "DEPOSIT"
-
-
-def test_grasshopper_ofx_auto_resolves_account_key_by_acctid_last4(tmp_path: Path) -> None:
-    cfg_path = write_test_workspace_config(tmp_path, include_api_creds=False)
-    with cfg_path.open("a", encoding="utf-8") as fh:
-        fh.write(
-            """
-[[grasshopper.accounts]]
-account_key = "grasshopper_savings"
-acctid_last4 = "1111"
-
-[[grasshopper.accounts]]
-account_key = "grasshopper_money_market"
-acctid_last4 = "2222"
-"""
-        )
-
-    sav_ofx = tmp_path / "export_a.ofx"
-    sav_ofx.write_text(
-        """<OFX><BANKMSGSRSV1><STMTTRNRS><STMTRS>
-<CURDEF>USD
-<BANKACCTFROM><BANKID>000<ACCTID>00001111<ACCTTYPE>SAVINGS</BANKACCTFROM>
-<BANKTRANLIST>
-<STMTTRN><TRNTYPE>DEBIT<DTPOSTED>20261105<TRNAMT>-1500.00<FITID>S-1<NAME>TRANSFER TO MM</STMTTRN>
-</BANKTRANLIST>
-</STMTRS></STMTTRNRS></BANKMSGSRSV1></OFX>""",
-        encoding="utf-8",
-    )
-    mm_ofx = tmp_path / "export_b.ofx"
-    mm_ofx.write_text(
-        """<OFX><BANKMSGSRSV1><STMTTRNRS><STMTRS>
-<CURDEF>USD
-<BANKACCTFROM><BANKID>000<ACCTID>00002222<ACCTTYPE>SAVINGS</BANKACCTFROM>
-<BANKTRANLIST>
-<STMTTRN><TRNTYPE>CREDIT<DTPOSTED>20261105<TRNAMT>1500.00<FITID>M-1<NAME>TRANSFER FROM SAV</STMTTRN>
-</BANKTRANLIST>
-</STMTRS></STMTTRNRS></BANKMSGSRSV1></OFX>""",
-        encoding="utf-8",
-    )
-
-    stdout_buf = io.StringIO()
-    with contextlib.redirect_stdout(stdout_buf):
-        assert (
-            main(["--config", str(cfg_path), "ingest", "grasshopper", "--file", str(sav_ofx)]) == 0
-        )
-        assert (
-            main(["--config", str(cfg_path), "ingest", "grasshopper", "--file", str(mm_ofx)]) == 0
-        )
-
-    cfg = load_config(cfg_path)
-    with LedgerDB(cfg.general.db_path) as db:
-        txs = db.list_bank_transactions(source="grasshopper")
-    assert {tx.account_key for tx in txs} == {
-        "grasshopper_savings",
-        "grasshopper_money_market",
-    }
 
 
 def test_bank_transfer_reconciliation_and_harvest_isolation(tmp_path: Path) -> None:

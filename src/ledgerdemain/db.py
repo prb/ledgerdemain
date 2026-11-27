@@ -55,6 +55,13 @@ def make_bank_fingerprint(
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 
+def _staged_row_is_kept(status: str, category_rule: str) -> bool:
+    """Whether a re-plan must leave an existing staged transaction untouched."""
+    if status in {"pushed", "skipped", "outcome_unknown"}:
+        return True
+    return category_rule == "manual_recategorize" and status in {"staged", "approved"}
+
+
 class LedgerDB:
     """SQLite database manager for Ledgerdemain."""
 
@@ -1058,6 +1065,17 @@ class LedgerDB:
     # Staged transactions
     # ------------------------------------------------------------------
 
+    def kept_staged_bank_tx_ids(self) -> set[int]:
+        """Bank transaction ids whose staged row a re-plan leaves as it is (see the upsert)."""
+        rows = self.conn.execute(
+            "SELECT bank_tx_id, status, category_rule FROM staged_transactions"
+        ).fetchall()
+        return {
+            int(row["bank_tx_id"])
+            for row in rows
+            if _staged_row_is_kept(str(row["status"]), str(row["category_rule"]))
+        }
+
     def upsert_staged_transaction(self, tx: StagedTransaction) -> int:
         """Upsert a staged transaction unless it has already been pushed or skipped."""
         now = utc_now_iso()
@@ -1071,9 +1089,7 @@ class LedgerDB:
             existing_id = int(existing["id"])
             existing_status = str(existing["status"])
             existing_rule = str(existing["category_rule"])
-            if existing_status in {"pushed", "skipped", "outcome_unknown"}:
-                return existing_id
-            if existing_rule == "manual_recategorize" and existing_status in {"staged", "approved"}:
+            if _staged_row_is_kept(existing_status, existing_rule):
                 return existing_id
 
             with self.transaction():

@@ -377,7 +377,10 @@ def test_plan_names_unresolved_accounts_and_stages_nothing_on_an_empty_cache(
             planner.build_plan()
 
         assert exc_info.value.account_keys == ["common_shares", "shareholder_loan"]
-        assert "sync-meta" in str(exc_info.value)
+        message = str(exc_info.value)
+        assert "common_shares (mapped to 'Common Shares')" in message
+        assert "shareholder_loan (mapped to 'Shareholder Loan')" in message
+        assert "sync-meta" in message
         # The transaction on a built-in account is not staged either: the plan is all or nothing.
         assert db.list_staged_transactions() == []
 
@@ -422,3 +425,49 @@ def test_normal_balance_has_no_name_based_guess(tmp_path: Path) -> None:
         for key in ("not_an_account", "extra_payable", "revenue_other"):
             with pytest.raises(UnresolvedAccountError, match=key):
                 planner.normal_balance_for(key)
+
+
+def test_unresolvable_accounts_of_finished_transactions_do_not_block_planning(
+    tmp_path: Path,
+) -> None:
+    planner, db = _equity_and_loan_planner(tmp_path)
+    with db:
+        db.upsert_wave_accounts(_EQUITY_AND_LOAN_ACCOUNTS)
+        planner.build_plan()
+        opening = next(
+            t for t in db.list_staged_transactions() if t.description == "OPENING DEPOSIT"
+        )
+        assert opening.id is not None
+        db.mark_staged_pushed(opening.id, "wave-tx-1")
+        # The Wave account is archived after year-end, so its key stops resolving.
+        db.upsert_wave_accounts(
+            [WaveAccount("w-cs", "Common Shares", "EQUITY", "COMMON_SHARES", "CREDIT", True)]
+        )
+        db.upsert_bank_transactions(
+            [_tx("grasshopper", "2026-11-09", "FIGMA.COM", "20.00", "WITHDRAWAL", "fp-figma-2")]
+        )
+
+        summary = planner.build_plan()
+
+        assert summary.staged_transactions == 4  # the three unfinished ones and the new one
+        after = db.get_staged_transaction(opening.id)
+        assert after is not None
+        assert after.status == "pushed"
+        assert len(db.list_staged_transactions()) == 5
+
+
+def test_unresolvable_account_of_an_unfinished_transaction_still_blocks_planning(
+    tmp_path: Path,
+) -> None:
+    planner, db = _equity_and_loan_planner(tmp_path)
+    with db:
+        db.upsert_wave_accounts(_EQUITY_AND_LOAN_ACCOUNTS)
+        planner.build_plan()
+        db.upsert_wave_accounts(
+            [WaveAccount("w-sl", "Shareholder Loan", "LIABILITY", "OTHER", "CREDIT", True)]
+        )
+
+        with pytest.raises(UnresolvedAccountError) as exc_info:
+            planner.build_plan()
+
+        assert exc_info.value.account_keys == ["shareholder_loan"]

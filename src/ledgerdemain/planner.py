@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 
 from ledgerdemain.categorize import Categorizer
@@ -26,12 +26,20 @@ class BalanceError(ValueError):
 class UnresolvedAccountError(ValueError):
     """An account key has no cached Wave account and no built-in default normal balance."""
 
-    def __init__(self, account_keys: Iterable[str]) -> None:
+    def __init__(
+        self, account_keys: Iterable[str], accounts: Mapping[str, str] | None = None
+    ) -> None:
         self.account_keys = sorted(set(account_keys))
+        mapping = accounts or {}
+        named = [
+            f"{key} (mapped to {mapping[key]!r})" if mapping.get(key, key) != key else key
+            for key in self.account_keys
+        ]
         super().__init__(
-            f"No cached Wave account or built-in default for: {', '.join(self.account_keys)}. "
+            f"No cached Wave account or built-in default for: {', '.join(named)}. "
             "Run 'ledgerdemain wave sync-meta' and check that each key is mapped under "
-            "[accounts] in ledgerdemain.toml."
+            "[accounts] in ledgerdemain.toml (an archived or renamed Wave account also stops "
+            "resolving)."
         )
 
 
@@ -77,7 +85,7 @@ def resolve_normal_balance(db: LedgerDB, accounts: dict[str, str], account_key: 
         return cached.normal_balance_type.upper()
     if account_key in DEFAULT_NORMAL_BALANCE:
         return DEFAULT_NORMAL_BALANCE[account_key]
-    raise UnresolvedAccountError([account_key])
+    raise UnresolvedAccountError([account_key], accounts)
 
 
 def validate_double_entry_balance(
@@ -173,16 +181,21 @@ class Planner:
                 tx_matches.setdefault(m.counterparty_bank_tx_id, []).append(m)
 
         # Build everything first so an unresolved account key stages nothing.
+        # Transactions whose staged row the upsert would leave alone (pushed, skipped, unknown
+        # outcome, manually recategorized) are not rebuilt, so they can't block a new plan.
+        kept = self.db.kept_staged_bank_tx_ids()
         staged_all: list[StagedTransaction] = []
         unresolved: list[str] = []
         for tx in self.db.list_bank_transactions():
             assert tx.id is not None
+            if tx.id in kept:
+                continue
             try:
                 staged_all.append(self._build_staged_transaction(tx, tx_matches.get(tx.id, [])))
             except UnresolvedAccountError as err:
                 unresolved.extend(err.account_keys)
         if unresolved:
-            raise UnresolvedAccountError(unresolved)
+            raise UnresolvedAccountError(unresolved, self.config.accounts)
 
         for staged in staged_all:
             self.db.upsert_staged_transaction(staged)

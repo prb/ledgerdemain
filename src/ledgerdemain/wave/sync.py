@@ -10,7 +10,12 @@ from ledgerdemain.db import LedgerDB
 from ledgerdemain.http_client import GraphQLError, HttpError, OutcomeUnknownError
 from ledgerdemain.models import StagedTransaction
 from ledgerdemain.money import format_money
-from ledgerdemain.planner import BalanceError, resolve_normal_balance, validate_double_entry_balance
+from ledgerdemain.planner import (
+    BalanceError,
+    UnresolvedAccountError,
+    resolve_normal_balance,
+    validate_double_entry_balance,
+)
 from ledgerdemain.wave.client import WaveApiError, WaveGraphQLClient
 
 
@@ -150,7 +155,7 @@ class WaveSyncService:
                     normal_balance_lookup=self._normal_balance_lookup,
                     anchor_wave_account_id=account_id_map[tx.anchor_account_key],
                 )
-            except BalanceError as err:
+            except (BalanceError, UnresolvedAccountError) as err:
                 if not dry_run:
                     self.db.mark_staged_failed(tx.id, str(err))
                 summary.transactions_failed += 1

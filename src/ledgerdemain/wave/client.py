@@ -142,35 +142,6 @@ query ListProducts($businessId: ID!, $page: Int!, $pageSize: Int!) {
 }
 """
 
-_LIST_INVOICES_QUERY = """
-query ListInvoices($businessId: ID!, $page: Int!, $pageSize: Int!) {
-  business(id: $businessId) {
-    id
-    invoices(page: $page, pageSize: $pageSize) {
-      pageInfo {
-        currentPage
-        totalPages
-        totalCount
-      }
-      edges {
-        node {
-          id
-          invoiceNumber
-          status
-          customer {
-            id
-            name
-          }
-          total {
-            value
-          }
-        }
-      }
-    }
-  }
-}
-"""
-
 _CUSTOMER_CREATE_MUTATION = """
 mutation CustomerCreate($input: CustomerCreateInput!) {
   customerCreate(input: $input) {
@@ -386,25 +357,6 @@ class WaveGraphQLClient:
                 break
             page += 1
         return products
-
-    def list_invoices(self, business_id: str, page_size: int = 50) -> list[dict[str, Any]]:
-        """List existing Wave invoices."""
-        invoices: list[dict[str, Any]] = []
-        page = 1
-        while True:
-            data = self._gql(
-                _LIST_INVOICES_QUERY,
-                {"businessId": business_id, "page": page, "pageSize": page_size},
-            )
-            conn = (data.get("business") or {}).get("invoices") or {}
-            for edge in conn.get("edges") or []:
-                if edge.get("node"):
-                    invoices.append(dict(edge["node"]))
-            info = conn.get("pageInfo") or {}
-            if page >= int(info.get("totalPages", 1)):
-                break
-            page += 1
-        return invoices
 
     def create_customer(
         self, business_id: str, name: str, email: str | None = None

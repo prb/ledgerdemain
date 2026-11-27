@@ -38,7 +38,8 @@ def test_money_roundtrip_and_currency_formats(m: Money) -> None:
     assert parse_money(format_money(m)) == m
     assert Money.from_cents(m.cents) == m
 
-    abs_str = abs(m).format_comma()
+    whole, frac = divmod(abs(m).cents, 100)
+    abs_str = f"{whole:,}.{frac:02d}"
     assert parse_money(f"${abs_str}") == abs(m)
     if m != ZERO:
         assert parse_money(f"-${abs_str}") == -abs(m)

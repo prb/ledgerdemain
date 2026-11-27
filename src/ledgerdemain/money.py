@@ -169,12 +169,6 @@ class Money:
         whole, frac = divmod(abs(self.cents), 100)
         return f"{sign}{whole}.{frac:02d}"
 
-    def format_comma(self) -> str:
-        """Format as a fixed 2-decimal string with thousands separators."""
-        sign = "-" if self.cents < 0 else ""
-        whole, frac = divmod(abs(self.cents), 100)
-        return f"{sign}{whole:,}.{frac:02d}"
-
     def __str__(self) -> str:
         return self.format()
 

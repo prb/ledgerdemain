@@ -919,7 +919,6 @@ def build_parser() -> argparse.ArgumentParser:
     ingest_sub = p_ingest.add_subparsers(dest="ingest_target", required=True)
 
     p_ing_harv = ingest_sub.add_parser("harvest", help="Ingest Harvest invoices/payments via API")
-    p_ing_harv.add_argument("--api", action="store_true", help="Force Harvest API sync")
     p_ing_harv.add_argument("--since", help="Incremental updated_since date (YYYY-MM-DD)")
     p_ing_harv.set_defaults(func=_cmd_ingest)
 

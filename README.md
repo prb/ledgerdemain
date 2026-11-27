@@ -39,6 +39,9 @@ person doing one set of books on one machine.
   report --> checklist of transfers between your own accounts --> you, in the Wave UI
 ```
 
+The Keychain is read whenever the configuration loads, so every command reads every
+`${keychain:...}` token the config mentions, not just `ingest`.
+
 Wave's API can't read back bank transactions, link deposits to invoices, or create transfers between
 accounts, and `moneyTransactionCreate` insists on exact double-entry balance. So every transaction is
 staged locally first: sources are cross-reconciled, each staged transaction is checked to balance to
@@ -119,7 +122,9 @@ Do the same for `HARVEST_ACCESS_TOKEN`, `GRASSHOPPER_ACCESS_TOKEN` and `GRASSHOP
 ### Gusto payroll (CSV files)
 
 - Gusto limits its API to approved partner apps, so single-company owners use exports. From
-  **Reports**, export the **Payroll Journal** and **Contractor Payment** CSVs into `inbox/gusto/`.
+  **Reports**, export the **Payroll journal** and **Contractor Payment** CSVs into `inbox/gusto/`.
+  Gusto names the payroll file `<company>-payroll-summary-<dates>.csv`, but the report inside is
+  titled "Payroll journal", and that is the one this reads.
 - Preamble and `Totals` rows are skipped, lines are aggregated by check date, and the tax and
   benefit breakdowns are kept in the transaction notes.
 

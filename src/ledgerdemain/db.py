@@ -457,11 +457,8 @@ class LedgerDB:
         self,
         invoices: list[HarvestInvoice],
         *,
-        input_kind: str,
         clients: list[HarvestClient] | None = None,
         payments: list[HarvestPayment] | None = None,
-        file_path: str | None = None,
-        file_sha256: str | None = None,
         sync_cursor_source: str | None = None,
         sync_cursor_value: str | None = None,
     ) -> tuple[int, int, int]:
@@ -472,9 +469,7 @@ class LedgerDB:
             pay_cnt = self.upsert_harvest_payments(payments) if payments is not None else 0
             self.record_ingestion_batch(
                 source="harvest",
-                input_kind=input_kind,
-                file_path=file_path,
-                file_sha256=file_sha256,
+                input_kind="api",
                 records_read=inv_cnt,
                 records_inserted=inv_cnt,
             )

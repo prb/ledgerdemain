@@ -69,10 +69,9 @@ uv run --extra dev pytest -v
 - Run `uv run ledgerdemain wave list-businesses` if you need to look up your `WAVE_BUSINESS_ID`.
 - Run `uv run ledgerdemain wave sync-meta` to cache your Chart of Accounts, customers, and products, then map your account names/IDs under `[accounts]` in `ledgerdemain.toml`.
 
-### 2. Harvest (REST API v2 or CSV)
+### 2. Harvest (REST API v2)
 - Generate a Personal Access Token and Account ID in Harvest Developers (`https://id.getharvest.com/developers`).
 - Set `HARVEST_ACCOUNT_ID` and `HARVEST_ACCESS_TOKEN` in `.env`, plus `harvest.user_agent` with your app name and contact email.
-- Alternatively, drop exported Harvest invoice CSVs into `inbox/harvest/` or pass `--file`.
 
 ### 3. Grasshopper Bank (Multi-Account Read-Only API or OFX/CSV)
 - In Grasshopper online banking, go to **Settings -> API Banking**, accept the terms, **whitelist your static IP address**, and save both the Bearer Token (`GRASSHOPPER_ACCESS_TOKEN`) and Header Secret (`GRASSHOPPER_HEADER_SECRET`) in `.env`.

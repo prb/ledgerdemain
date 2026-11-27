@@ -988,6 +988,7 @@ def build_parser() -> argparse.ArgumentParser:
             "manual_transfer_required",
             "manual_invoice_payment_required",
             "failed",
+            "outcome_unknown",
             "pushed",
             "all",
         ],

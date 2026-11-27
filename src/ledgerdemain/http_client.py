@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import contextlib
+import http.client
 import json
 import time
 import urllib.error
@@ -34,6 +35,14 @@ class HttpError(RuntimeError):
 
 class RateLimitError(HttpError):
     """Raised when HTTP 429 persists past all retry attempts."""
+
+
+class OutcomeUnknownError(HttpError):
+    """Raised when a non-idempotent request failed in a way that may have left it applied.
+
+    A lost connection, timeout, truncated response or 5xx can arrive after the server has
+    committed the request, so the caller must check the remote state before sending it again.
+    """
 
 
 class GraphQLError(RuntimeError):
@@ -118,8 +127,15 @@ class HttpClient:
         url: str,
         headers: dict[str, str] | None = None,
         body: bytes | None = None,
+        *,
+        idempotent: bool = True,
     ) -> HttpResponse:
-        """Perform an HTTP request with retry handling for transient and 429 responses."""
+        """Perform an HTTP request with retry handling for transient and 429 responses.
+
+        With ``idempotent=False`` only 429 is retried, because the server rejected the request
+        without applying it. Network failures and 5xx responses raise ``OutcomeUnknownError``
+        without a retry, so a request that may already have been applied is not sent twice.
+        """
         last_exc: Exception | None = None
         for attempt in range(self.max_retries + 1):
             try:
@@ -130,12 +146,22 @@ class HttpClient:
                     body=body,
                     timeout=self.timeout,
                 )
-            except (urllib.error.URLError, TimeoutError, OSError) as exc:
+            except (urllib.error.URLError, TimeoutError, OSError, http.client.HTTPException) as exc:
+                # HTTPException covers a truncated body (IncompleteRead) or a malformed status
+                # line, which are not OSError subclasses.
                 last_exc = exc
+                if not idempotent:
+                    raise OutcomeUnknownError(0, f"Network request failed: {exc}") from exc
                 if attempt < self.max_retries:
                     self.sleep_fn(self.base_delay * (2**attempt))
                     continue
                 raise HttpError(0, f"Network request failed: {exc}") from exc
+
+            if not idempotent and resp.status >= 500:
+                body_text = resp.body.decode("utf-8", errors="replace")
+                raise OutcomeUnknownError(
+                    resp.status, body_text[:300] or "Request failed", body=body_text
+                )
 
             if resp.status in self.RETRYABLE_STATUSES and attempt < self.max_retries:
                 delay = self.base_delay * (2**attempt)
@@ -166,6 +192,8 @@ class HttpClient:
         headers: dict[str, str] | None = None,
         json_body: Any = None,
         params: dict[str, Any] | None = None,
+        *,
+        idempotent: bool = True,
     ) -> Any:
         """Send an HTTP request and decode a JSON response."""
         full_url = url
@@ -182,7 +210,13 @@ class HttpClient:
             if _get_header_ci(req_headers, "Content-Type") is None:
                 req_headers["Content-Type"] = "application/json"
 
-        resp = self.request_bytes(method=method, url=full_url, headers=req_headers, body=body_bytes)
+        resp = self.request_bytes(
+            method=method,
+            url=full_url,
+            headers=req_headers,
+            body=body_bytes,
+            idempotent=idempotent,
+        )
         if not resp.body:
             return {}
         return json.loads(resp.body.decode("utf-8"))
@@ -193,15 +227,22 @@ class HttpClient:
         access_token: str,
         query: str,
         variables: dict[str, Any] | None = None,
+        *,
+        idempotent: bool = True,
     ) -> dict[str, Any]:
-        """Execute a GraphQL POST operation and raise GraphQLError on top-level errors."""
+        """Execute a GraphQL POST operation and raise GraphQLError on top-level errors.
+
+        Pass ``idempotent=False`` for mutations that create records (see ``request_bytes``).
+        """
         headers = {
             "Authorization": f"Bearer {access_token}",
             "Content-Type": "application/json",
             "Accept": "application/json",
         }
         payload = {"query": query, "variables": variables or {}}
-        result = self.request_json("POST", endpoint, headers=headers, json_body=payload)
+        result = self.request_json(
+            "POST", endpoint, headers=headers, json_body=payload, idempotent=idempotent
+        )
         if not isinstance(result, dict):
             raise HttpError(500, f"Unexpected GraphQL response shape: {type(result).__name__}")
         errors = result.get("errors")

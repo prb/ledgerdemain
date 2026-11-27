@@ -1,4 +1,4 @@
-"""Base adapter protocols, registry, and normalization helpers."""
+"""Shared adapter normalization helpers."""
 
 from __future__ import annotations
 
@@ -6,15 +6,6 @@ import hashlib
 import re
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Protocol, runtime_checkable
-
-from ledgerdemain.models import (
-    BankTransaction,
-    GustoPayrollRun,
-    HarvestClient,
-    HarvestInvoice,
-    HarvestPayment,
-)
 
 _WHITESPACE_RE = re.compile(r"\s+")
 _ISO_DATE_PREFIX_RE = re.compile(r"^(\d{4}-\d{2}-\d{2})(?:[T\s].*)?$")
@@ -74,57 +65,3 @@ def sha256_file(path: Path) -> str:
         for chunk in iter(lambda: fh.read(65536), b""):
             digest.update(chunk)
     return digest.hexdigest()
-
-
-@runtime_checkable
-class TransactionSourceAdapter(Protocol):
-    """Protocol for adapters producing normalized bank or card transactions."""
-
-    source_name: str
-
-    def fetch_or_parse(self, *args: Any, **kwargs: Any) -> list[BankTransaction]: ...
-
-
-@runtime_checkable
-class InvoiceSourceAdapter(Protocol):
-    """Protocol for adapters producing clients, invoices, and payments."""
-
-    source_name: str
-
-    def fetch_invoices(self, *args: Any, **kwargs: Any) -> list[HarvestInvoice]: ...
-
-    def fetch_clients(self, *args: Any, **kwargs: Any) -> list[HarvestClient]: ...
-
-    def fetch_payments_for_invoice(
-        self, invoice_id: str, *args: Any, **kwargs: Any
-    ) -> list[HarvestPayment]: ...
-
-
-@runtime_checkable
-class PayrollSourceAdapter(Protocol):
-    """Protocol for adapters producing aggregated payroll runs."""
-
-    source_name: str
-
-    def parse_file(self, path: Path, *args: Any, **kwargs: Any) -> list[GustoPayrollRun]: ...
-
-
-class AdapterRegistry:
-    """Simple registry mapping source identifiers to adapter instances/factories."""
-
-    def __init__(self) -> None:
-        self._adapters: dict[str, Any] = {}
-
-    def register(self, name: str, adapter: Any) -> None:
-        """Register an adapter under a unique key."""
-        self._adapters[name] = adapter
-
-    def get(self, name: str) -> Any:
-        """Retrieve an adapter by key or raise KeyError."""
-        if name not in self._adapters:
-            raise KeyError(f"No adapter registered for {name!r}")
-        return self._adapters[name]
-
-    def keys(self) -> list[str]:
-        """List registered adapter keys."""
-        return sorted(self._adapters)

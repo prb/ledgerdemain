@@ -11,7 +11,6 @@ from pathlib import Path
 from typing import Any
 
 from ledgerdemain.adapters.base import sha256_file
-from ledgerdemain.adapters.capital_one import CapitalOneCsvAdapter, CapitalOnePdfAdapter
 from ledgerdemain.adapters.grasshopper import GrasshopperApiAdapter, GrasshopperCsvAdapter
 from ledgerdemain.adapters.gusto import GustoPayrollCsvAdapter
 from ledgerdemain.adapters.harvest import HarvestApiAdapter
@@ -369,10 +368,7 @@ def _ingest_capital_one_file(
     expected_currency: str | None = "USD",
 ) -> tuple[int, int]:
     suffix = path.suffix.lower()
-    if suffix == ".pdf":
-        txs = CapitalOnePdfAdapter().parse_file(path)
-        kind = "pdf"
-    elif suffix in {".ofx", ".qfx", ".qbo"}:
+    if suffix in {".ofx", ".qfx", ".qbo"}:
         stmt = OfxTransactionParser().parse_statement_file(
             path,
             source="capital_one",
@@ -383,8 +379,10 @@ def _ingest_capital_one_file(
         kind = "ofx"
         _print_ofx_summary(path, stmt)
     else:
-        txs = CapitalOneCsvAdapter().parse_file(path)
-        kind = "csv"
+        raise ValueError(
+            f"Unsupported Capital One file type {path.suffix!r} ({path.name}); "
+            "export OFX, QFX, or QBO instead."
+        )
 
     return db.ingest_bank_transactions_batch(
         txs,
@@ -560,7 +558,7 @@ def _cmd_ingest(args: argparse.Namespace) -> int:
                 files = _inbox_files(
                     cfg.general.inbox_dir,
                     "capital_one",
-                    (".csv", ".pdf", ".ofx", ".qfx", ".qbo"),
+                    (".ofx", ".qfx", ".qbo"),
                 )
                 succeeded, total_r, total_i = _ingest_inbox_files(
                     "Capital One",
@@ -625,7 +623,7 @@ def _cmd_ingest(args: argparse.Namespace) -> int:
                 _inbox_files(
                     cfg.general.inbox_dir,
                     "capital_one",
-                    (".csv", ".pdf", ".ofx", ".qfx", ".qbo"),
+                    (".ofx", ".qfx", ".qbo"),
                 ),
                 lambda f: _ingest_capital_one_file(db, f, expected_currency=cfg.general.currency),
                 failures,
@@ -936,10 +934,8 @@ def build_parser() -> argparse.ArgumentParser:
     p_ing_gh.add_argument("--to", dest="to_date", help="End date (YYYY-MM-DD)")
     p_ing_gh.set_defaults(func=_cmd_ingest)
 
-    p_ing_co = ingest_sub.add_parser(
-        "capital-one", help="Ingest Capital One credit card CSV/PDF/OFX"
-    )
-    p_ing_co.add_argument("--file", help="Path to Capital One CSV, PDF, or OFX/QBO file")
+    p_ing_co = ingest_sub.add_parser("capital-one", help="Ingest Capital One credit card OFX")
+    p_ing_co.add_argument("--file", help="Path to Capital One OFX/QFX/QBO file")
     p_ing_co.add_argument("--inbox", action="store_true", help="Scan inbox/capital_one/")
     p_ing_co.set_defaults(func=_cmd_ingest)
 

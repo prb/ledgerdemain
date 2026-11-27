@@ -1,9 +1,8 @@
-"""Shared test fixtures, synthetic PDF/CSV/OFX data, and mock HTTP/Wave transports."""
+"""Shared test fixtures, synthetic CSV/OFX data, and mock HTTP/Wave transports."""
 
 from __future__ import annotations
 
 import json
-import zlib
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -12,54 +11,6 @@ from xml.sax.saxutils import escape
 from ledgerdemain.config import AppConfig, load_config
 from ledgerdemain.http_client import HttpResponse
 from ledgerdemain.money import ZERO, parse_money
-
-
-def create_synthetic_pdf(lines: list[str], path: Path) -> None:
-    """Create a valid PDF 1.4 file with a FlateDecode content stream."""
-    escaped = [line.replace("\\", "\\\\").replace("(", "\\(").replace(")", "\\)") for line in lines]
-    stream_cmds = ["BT", "/F1 10 Tf", "50 750 Td", "14 TL"]
-    for idx, line in enumerate(escaped):
-        if idx == 0:
-            stream_cmds.append(f"({line}) Tj")
-        else:
-            stream_cmds.append(f"({line}) '")
-    stream_cmds.append("ET")
-    raw_stream = "\n".join(stream_cmds).encode("latin-1")
-    compressed = zlib.compress(raw_stream)
-
-    objects: list[bytes] = [
-        b"1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n",
-        b"2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n",
-        (
-            b"3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] "
-            b"/Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>\nendobj\n"
-        ),
-        b"4 0 obj\n<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>\nendobj\n",
-        (
-            f"5 0 obj\n<< /Length {len(compressed)} /Filter /FlateDecode >>\nstream\n".encode(
-                "ascii"
-            )
-            + compressed
-            + b"\nendstream\nendobj\n"
-        ),
-    ]
-
-    buf = bytearray(b"%PDF-1.4\n")
-    offsets: list[int] = [0]
-    for obj in objects:
-        offsets.append(len(buf))
-        buf.extend(obj)
-
-    xref_pos = len(buf)
-    buf.extend(f"xref\n0 {len(offsets)}\n0000000000 65535 f \n".encode("ascii"))
-    for off in offsets[1:]:
-        buf.extend(f"{off:010d} 00000 n \n".encode("ascii"))
-    buf.extend(
-        (f"trailer\n<< /Size {len(offsets)} /Root 1 0 R >>\nstartxref\n{xref_pos}\n%%EOF\n").encode(
-            "ascii"
-        )
-    )
-    path.write_bytes(bytes(buf))
 
 
 def write_test_workspace_config(
@@ -201,28 +152,6 @@ def make_test_config(tmp_dir: Path, **kwargs: Any) -> AppConfig:
     """Create and load an AppConfig rooted at tmp_dir."""
     return load_config(write_test_workspace_config(tmp_dir, **kwargs))
 
-
-SAMPLE_CAPITAL_ONE_CSV = """Transaction Date,Posted Date,Card No.,Description,Category,Debit,Credit
-2026-01-03,2026-01-04,1234,AMAZON WEB SERVICES,Merchandise,142.50,
-2026-01-05,2026-01-05,1234,BLUE BOTTLE COFFEE,Dining,6.25,
-2026-01-05,2026-01-05,1234,BLUE BOTTLE COFFEE,Dining,6.25,
-2026-01-06,2026-01-07,1234,FIGMA.COM,Merchandise,,15.00
-2026-01-08,2026-01-08,1234,MYSTERY HARDWARE CO,Merchandise,88.00,
-2026-01-12,2026-01-12,1234,CAPITAL ONE AUTOPAY PYMT,Payment/Credit,,500.00
-"""
-
-SAMPLE_CAPITAL_ONE_PDF_LINES = [
-    "Capital One Spark Business Statement",
-    "Billing Period: Dec 15, 2025 - Jan 14, 2026",
-    "Card Ending in 4321",
-    "Payments, Credits and Adjustments",
-    "Dec 20 Dec 21 CAPITAL ONE ONLINE PYMT -$250.00",
-    "Jan 02 Jan 02 SLACK REFUND $25.00",
-    "Transactions",
-    "Dec 28 Dec 29 GITHUB INC SAN FRANCISCO CA $45.00",
-    "Jan 04 Jan 05 DELTA AIR LINES ATLANTA GA $320.00",
-    "Total Transactions $365.00",
-]
 
 SAMPLE_GRASSHOPPER_CSV = """Grasshopper Business Checking - Activity Export
 Account: Operating **9012
@@ -709,10 +638,9 @@ def build_ofx_xml(section: str, acct_from: str, acct_id: str, entries: list[OfxE
 """
 
 
-# The e2e workflow data below mirrors SAMPLE_GRASSHOPPER_CSV, SAMPLE_CAPITAL_ONE_CSV and
-# SAMPLE_CAPITAL_ONE_PDF_LINES (same dates, descriptions, amounts, directions and card last-4),
-# expressed as OFX so the e2e test does not depend on the CSV/PDF adapters. The CSV and PDF
-# merchant categories are dropped because OFX does not carry them.
+# E2E workflow data as OFX: one Grasshopper checking account (ACCTID 9012) and two Capital One
+# cards (ACCTID 1234 and 4321). TRNTYPE is DEBIT or CREDIT, as in a real bank file, so no merchant
+# category is available to rules.
 E2E_GRASSHOPPER_OFX = build_ofx_xml(
     "BANK",
     "BANKACCTFROM",

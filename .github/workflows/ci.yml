@@ -18,8 +18,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     env:
-      # Run every check through the locked environment with both extras installed,
-      # so the optional PDF libraries are exercised as well as the pure-Python fallback.
+      # Run every check through the locked environment.
       UV_LOCKED: "1"
     steps:
       # Third-party actions are pinned to commit SHAs (tag in the trailing comment).
@@ -32,16 +31,16 @@ jobs:
           version: "0.13.8"
 
       - name: Format check
-        run: uv run --extra dev --extra pdf ruff format --check
+        run: uv run --extra dev ruff format --check
 
       - name: Lint
         if: ${{ !cancelled() }}
-        run: uv run --extra dev --extra pdf ruff check
+        run: uv run --extra dev ruff check
 
       - name: Type check
         if: ${{ !cancelled() }}
-        run: uv run --extra dev --extra pdf mypy
+        run: uv run --extra dev mypy
 
       - name: Tests
         if: ${{ !cancelled() }}
-        run: uv run --extra dev --extra pdf pytest
+        run: uv run --extra dev pytest

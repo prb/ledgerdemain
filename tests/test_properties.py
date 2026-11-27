@@ -12,7 +12,6 @@ import pytest
 from hypothesis import given
 from hypothesis import strategies as st
 
-from ledgerdemain.adapters.capital_one import CapitalOnePdfAdapter
 from ledgerdemain.adapters.ofx import OfxTransactionParser
 from ledgerdemain.categorize import Categorizer
 from ledgerdemain.config import CategorizationRule, load_config
@@ -341,25 +340,6 @@ def test_deterministic_fingerprinting(
     assert fp1 != fp_next_occ
     assert fp1 != fp_other_dir
     assert fp1 != fp_other_amt
-
-
-@given(
-    year=st.integers(min_value=2000, max_value=2098),
-    dec_day=st.integers(min_value=15, max_value=31),
-    jan_day=st.integers(min_value=1, max_value=14),
-)
-def test_capital_one_pdf_billing_cycle_year_rollover(year: int, dec_day: int, jan_day: int) -> None:
-    start_dt = date(year, 12, 15)
-    end_dt = date(year + 1, 1, 14)
-
-    resolved_dec = CapitalOnePdfAdapter._resolve_statement_date(
-        f"Dec {dec_day:02d}", start_dt, end_dt
-    )
-    resolved_jan = CapitalOnePdfAdapter._resolve_statement_date(
-        f"Jan {jan_day:02d}", start_dt, end_dt
-    )
-    assert resolved_dec == date(year, 12, dec_day).isoformat()
-    assert resolved_jan == date(year + 1, 1, jan_day).isoformat()
 
 
 @given(

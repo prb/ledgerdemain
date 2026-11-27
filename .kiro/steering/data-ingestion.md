@@ -5,7 +5,7 @@ description: Conventions for rigorous external file and payload parsing.
 
 # Data Ingestion & Parsing
 
-Apply these rules whenever parsing external files or API payloads (CSV, OFX/QFX/QBO, PDF, JSON).
+Apply these rules whenever parsing external files or API payloads (CSV, OFX/QFX/QBO, JSON).
 
 - **Fail fast and loudly on drift or corruption.** Raise an explicit domain parse error (a `ValueError` subclass named for the adapter, e.g., `<Source>ParseError`) on empty or unrecognizable files, missing required columns/tags, truncated envelopes, or unparseable dates and amounts. Never silently return `[]`, skip malformed records, or substitute defaults for required fields (such as `0.00` or today's date). Optional fields may use explicit defaults when documented at the field or helper definition.
 - **Never write a partial file.** Parse and validate the entire file before any database write so a parse failure leaves no records and no `ingestion_batches` row, and insert the file's records in a single transaction. Single-file (`--file`) runs fail immediately; multi-file inbox runs log per-file failures to `stderr`, continue processing remaining files (relying on record-level idempotency), and exit non-zero if any file failed.

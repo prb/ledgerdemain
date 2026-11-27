@@ -32,33 +32,17 @@ def _setup_staged_db(tmp: Path, db: LedgerDB) -> None:
             HarvestInvoice(
                 "inv-1001",
                 "1001",
-                "c1",
-                "Acme Corp",
+                "c2",
+                "New Client LLC",
                 "2026-01-01",
                 "2026-01-31",
                 "2026-01-05",
                 "paid",
                 "USD",
-                Money.parse("3000.00"),
-                ZERO,
-                Money.parse("3000.00"),
-                ZERO,
-                subject="Jan Retainer",
-            ),
-            HarvestInvoice(
-                "inv-1002",
-                "1002",
-                "c2",
-                "New Client LLC",
-                "2026-01-10",
-                "2026-02-09",
-                None,
-                "open",
-                "USD",
                 Money.parse("1500.00"),
                 ZERO,
                 Money.parse("1500.00"),
-                Money.parse("1500.00"),
+                ZERO,
                 subject="Advisory",
             ),
         ]
@@ -72,9 +56,9 @@ def _setup_staged_db(tmp: Path, db: LedgerDB) -> None:
                 fingerprint="fp-gh-dep",
                 tx_date="2026-01-05",
                 posted_date="2026-01-05",
-                description="ACH DEPOSIT ACME CORP",
-                normalized_description="ACH DEPOSIT ACME CORP",
-                amount=Money.parse("3000.00"),
+                description="ACH DEPOSIT NEW CLIENT LLC",
+                normalized_description="ACH DEPOSIT NEW CLIENT LLC",
+                amount=Money.parse("1500.00"),
                 direction="DEPOSIT",
             ),
             BankTransaction(
@@ -111,7 +95,7 @@ def test_sync_metadata_dry_run_live_push_and_idempotency(tmp_path: Path) -> None
         transport.rate_limit_once = True
         meta = svc.sync_metadata()
         assert sleep_calls == [0.0]
-        assert meta.accounts_synced == 20
+        assert meta.accounts_synced == 18
         assert meta.customers_synced == 1
         assert not meta.is_classic_accounting
 
@@ -119,19 +103,15 @@ def test_sync_metadata_dry_run_live_push_and_idempotency(tmp_path: Path) -> None
         calls_before = len(transport.calls)
         dry = svc.push(dry_run=True)
         assert len(transport.calls) == calls_before
-        assert dry.invoices_pushed == 2
         assert dry.transactions_pushed == 2
         assert "New Client LLC" in dry.would_create_customers
-        assert "Consulting Services" in dry.would_create_products
 
-        # Live push creates missing customer & product, invoices (unitPrice), and txs (no status)
+        # Live push creates the missing customer and the txs (no status)
         live = svc.push(dry_run=False)
-        assert live.invoices_pushed == 2
         assert live.transactions_pushed == 2
-        assert live.invoices_failed == 0
         assert live.transactions_failed == 0
-        assert len(transport.invoices) == 2
         assert len(transport.transactions) == 2
+        assert [c["name"] for c in transport.customers].count("New Client LLC") == 1
 
         for sent in transport.transactions:
             assert "status" not in sent["input"]
@@ -141,7 +121,6 @@ def test_sync_metadata_dry_run_live_push_and_idempotency(tmp_path: Path) -> None
         calls_after_push = len(transport.calls)
         second = svc.push(dry_run=False)
         assert len(transport.calls) == calls_after_push
-        assert second.invoices_pushed == 0
         assert second.transactions_pushed == 0
 
 
@@ -159,7 +138,7 @@ def test_wave_input_errors_and_classic_accounting_warning(tmp_path: Path) -> Non
         assert any("isClassicAccounting" in w for w in meta.warnings)
 
         transport.fail_next_tx_error = "Simulated Wave validation failure"
-        res = svc.push(dry_run=False, transactions_only=True)
+        res = svc.push(dry_run=False)
         assert res.transactions_failed == 1
         assert res.transactions_pushed == 1
         failed = db.list_staged_transactions(status="failed")
@@ -217,39 +196,6 @@ def _lossy_service(
     return svc, inner
 
 
-@pytest.mark.parametrize("failure", [TimeoutError("read timed out"), 504])
-def test_invoice_create_with_unknown_outcome_is_not_resent(
-    tmp_path: Path, failure: Exception | int
-) -> None:
-    cfg = make_test_config(tmp_path)
-    with LedgerDB(cfg.general.db_path) as db:
-        svc, wave = _lossy_service(tmp_path, db, "InvoiceCreate", failure)
-
-        first = svc.push(dry_run=False)
-
-        # Wave applied the invoice once; the client didn't retry and the push stopped.
-        assert len(_op_calls(wave, "InvoiceCreate")) == 1
-        assert len(wave.invoices) == 1
-        assert _op_calls(wave, "MoneyTransactionCreate") == []
-        assert first.invoices_failed == 1
-        assert first.invoices_pushed == 0
-        assert any(e.startswith("Push stopped") for e in first.errors)
-        failed = db.list_staged_invoices(status="outcome_unknown")
-        assert len(failed) == 1
-        lost_number = failed[0].invoice_number
-        assert "Outcome unknown" in (failed[0].last_error or "")
-
-        # The next push sends the rest but never re-creates the unknown-outcome invoice.
-        second = svc.push(dry_run=False)
-        assert second.errors == []
-        assert second.invoices_pushed == 1
-        assert second.transactions_pushed == 2
-        sent_numbers = [
-            c["variables"]["input"]["invoiceNumber"] for c in _op_calls(wave, "InvoiceCreate")
-        ]
-        assert sent_numbers.count(lost_number) == 1
-
-
 @pytest.mark.parametrize("failure", [http.client.IncompleteRead(b"{"), 502])
 def test_money_transaction_create_with_unknown_outcome_stops_push(
     tmp_path: Path, failure: Exception | int
@@ -258,7 +204,7 @@ def test_money_transaction_create_with_unknown_outcome_stops_push(
     with LedgerDB(cfg.general.db_path) as db:
         svc, wave = _lossy_service(tmp_path, db, "MoneyTransactionCreate", failure)
 
-        res = svc.push(dry_run=False, transactions_only=True)
+        res = svc.push(dry_run=False)
 
         assert len(_op_calls(wave, "MoneyTransactionCreate")) == 1
         assert res.transactions_failed == 1
@@ -277,22 +223,21 @@ def test_customer_create_with_unknown_outcome_is_reused_after_sync_meta(tmp_path
     with LedgerDB(cfg.general.db_path) as db:
         svc, wave = _lossy_service(tmp_path, db, "CustomerCreate", TimeoutError("timed out"))
 
-        first = svc.push(dry_run=False, invoices_only=True)
+        first = svc.push(dry_run=False)
         assert any("sync-meta" in e for e in first.errors)
         assert len(_op_calls(wave, "CustomerCreate")) == 1
-        # The invoice needing the new customer was not sent and stays approved.
-        assert [i.customer_name for i in db.list_staged_invoices(status="approved")] == [
-            "New Client LLC"
-        ]
+        # The transaction needing the new customer was not sent and stays approved.
+        assert len(db.list_staged_transactions(status="approved")) == 2
 
         svc.sync_metadata()
-        second = svc.push(dry_run=False, invoices_only=True)
+        second = svc.push(dry_run=False)
 
         assert second.errors == []
-        assert second.invoices_pushed == 1
+        assert second.transactions_pushed == 2
         assert len(_op_calls(wave, "CustomerCreate")) == 1
         new_client = next(c for c in wave.customers if c["name"] == "New Client LLC")
-        assert wave.invoices[-1]["customer"]["id"] == new_client["id"]
+        deposit = next(t for t in wave.transactions if t["input"]["lineItems"][0].get("customerId"))
+        assert deposit["input"]["lineItems"][0]["customerId"] == new_client["id"]
 
 
 def _replan_and_approve(tmp_path: Path, db: LedgerDB) -> None:
@@ -307,13 +252,13 @@ def test_replan_and_approve_all_do_not_resend_unknown_outcome_transaction(tmp_pa
         svc, wave = _lossy_service(
             tmp_path, db, "MoneyTransactionCreate", http.client.IncompleteRead(b"{")
         )
-        svc.push(dry_run=False, transactions_only=True)
+        svc.push(dry_run=False)
         [unknown] = db.list_staged_transactions(status="outcome_unknown")
         assert unknown.id is not None
 
         # The routine plan -> approve --all-staged -> push cycle must not revive it.
         _replan_and_approve(tmp_path, db)
-        second = svc.push(dry_run=False, transactions_only=True)
+        second = svc.push(dry_run=False)
 
         assert second.errors == []
         sent = [
@@ -330,26 +275,11 @@ def test_replan_and_approve_all_do_not_resend_unknown_outcome_transaction(tmp_pa
         assert db.approve_staged(tx_ids=[unknown.id]) == (1, 0)
 
 
-def test_replan_and_approve_all_do_not_resend_unknown_outcome_invoice(tmp_path: Path) -> None:
-    cfg = make_test_config(tmp_path)
-    with LedgerDB(cfg.general.db_path) as db:
-        svc, wave = _lossy_service(tmp_path, db, "InvoiceCreate", 504)
-        svc.push(dry_run=False, invoices_only=True)
-        [unknown] = db.list_staged_invoices(status="outcome_unknown")
-
-        _replan_and_approve(tmp_path, db)
-        svc.push(dry_run=False, invoices_only=True)
-
-        sent = [c["variables"]["input"]["invoiceNumber"] for c in _op_calls(wave, "InvoiceCreate")]
-        assert sent.count(unknown.invoice_number) == 1
-        assert len(db.list_staged_invoices(status="outcome_unknown")) == 1
-
-
 def test_rejected_create_stops_push_without_marking_records(tmp_path: Path) -> None:
     cfg = make_test_config(tmp_path)
     with LedgerDB(cfg.general.db_path) as db:
         svc, wave = _lossy_service(tmp_path, db, "MoneyTransactionCreate", 401)
-        res = svc.push(dry_run=False, transactions_only=True)
+        res = svc.push(dry_run=False)
 
         assert any(e.startswith("Push stopped: Wave rejected") for e in res.errors)
         assert len(_op_calls(wave, "MoneyTransactionCreate")) == 1
@@ -360,8 +290,6 @@ def test_rejected_create_stops_push_without_marking_records(tmp_path: Path) -> N
 
 _MUTATION_ENTITIES = {
     "customerCreate": "customer",
-    "productCreate": "product",
-    "invoiceCreate": "invoice",
     "moneyTransactionCreate": "transaction",
 }
 
@@ -389,29 +317,6 @@ _UNUSABLE_200_BODIES = [
 
 
 @pytest.mark.parametrize("body", _UNUSABLE_200_BODIES)
-def test_unusable_200_on_invoice_create_is_unknown_and_not_resent(
-    tmp_path: Path, body: bytes
-) -> None:
-    cfg = make_test_config(tmp_path)
-    with LedgerDB(cfg.general.db_path) as db:
-        svc, wave = _lossy_service(tmp_path, db, "InvoiceCreate", body)
-
-        first = svc.push(dry_run=False, invoices_only=True)
-
-        assert len(wave.invoices) == 1
-        assert any(e.startswith("Push stopped") for e in first.errors)
-        [unknown] = db.list_staged_invoices(status="outcome_unknown")
-        assert db.list_staged_invoices(status="failed") == []
-
-        _replan_and_approve(tmp_path, db)
-        svc.push(dry_run=False, invoices_only=True)
-
-        sent = [c["variables"]["input"]["invoiceNumber"] for c in _op_calls(wave, "InvoiceCreate")]
-        assert sent.count(unknown.invoice_number) == 1
-        assert len(db.list_staged_invoices(status="outcome_unknown")) == 1
-
-
-@pytest.mark.parametrize("body", _UNUSABLE_200_BODIES)
 def test_unusable_200_on_money_transaction_create_is_unknown_and_not_resent(
     tmp_path: Path, body: bytes
 ) -> None:
@@ -419,7 +324,7 @@ def test_unusable_200_on_money_transaction_create_is_unknown_and_not_resent(
     with LedgerDB(cfg.general.db_path) as db:
         svc, wave = _lossy_service(tmp_path, db, "MoneyTransactionCreate", body)
 
-        first = svc.push(dry_run=False, transactions_only=True)
+        first = svc.push(dry_run=False)
 
         assert len(_op_calls(wave, "MoneyTransactionCreate")) == 1
         assert first.transactions_pushed == 0
@@ -428,7 +333,7 @@ def test_unusable_200_on_money_transaction_create_is_unknown_and_not_resent(
         assert db.list_staged_transactions(status="failed") == []
 
         _replan_and_approve(tmp_path, db)
-        second = svc.push(dry_run=False, transactions_only=True)
+        second = svc.push(dry_run=False)
 
         assert second.errors == []
         sent = [
@@ -446,17 +351,17 @@ def test_unusable_200_on_customer_create_is_reused_after_sync_meta(
     with LedgerDB(cfg.general.db_path) as db:
         svc, wave = _lossy_service(tmp_path, db, "CustomerCreate", body)
 
-        first = svc.push(dry_run=False, invoices_only=True)
+        first = svc.push(dry_run=False)
 
         assert any("sync-meta" in e for e in first.errors)
         assert len(_op_calls(wave, "CustomerCreate")) == 1
-        assert db.list_staged_invoices(status="outcome_unknown") == []
-        assert db.list_staged_invoices(status="failed") == []
-        assert len(db.list_staged_invoices(status="approved")) == 1
+        assert db.list_staged_transactions(status="outcome_unknown") == []
+        assert db.list_staged_transactions(status="failed") == []
+        assert len(db.list_staged_transactions(status="approved")) == 2
 
         svc.sync_metadata()
-        second = svc.push(dry_run=False, invoices_only=True)
+        second = svc.push(dry_run=False)
 
         assert second.errors == []
-        assert second.invoices_pushed == 1
+        assert second.transactions_pushed == 2
         assert len(_op_calls(wave, "CustomerCreate")) == 1

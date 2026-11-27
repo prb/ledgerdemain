@@ -13,10 +13,6 @@ from ledgerdemain.money import Money, parse_money
 
 _ENV_PATTERN = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}")
 
-VALID_DEPOSIT_STRATEGIES = {"ar_clearing", "manual_ui_payment", "direct_income"}
-VALID_INVOICE_STATUSES = {"SAVED", "DRAFT"}
-VALID_TRANSFER_STRATEGIES = {"manual_transfer", "clearing_account"}
-
 
 class ConfigError(ValueError):
     """Raised when configuration or rules files are invalid."""
@@ -91,10 +87,6 @@ class GeneralConfig:
 class AccountingConfig:
     """Accounting policy and reconciliation window settings."""
 
-    mirror_harvest_invoices: bool = True
-    mirrored_invoice_deposit_strategy: str = "ar_clearing"
-    wave_invoice_create_status: str = "SAVED"
-    transfer_strategy: str = "manual_transfer"
     deposit_match_window_days: int = 7
     payroll_match_window_days: int = 5
     transfer_match_window_days: int = 5
@@ -108,7 +100,6 @@ class WaveConfig:
     endpoint: str = "https://gql.waveapps.com/graphql/public"
     business_id: str = ""
     access_token: str = ""
-    default_product_name: str = "Consulting Services"
 
 
 @dataclass(slots=True)
@@ -224,39 +215,7 @@ def load_config(path: Path) -> AppConfig:
     )
 
     acc_raw = raw.get("accounting", {})
-    mirror = bool(acc_raw.get("mirror_harvest_invoices", True))
-    deposit_strategy = str(acc_raw.get("mirrored_invoice_deposit_strategy", "ar_clearing"))
-    invoice_status = str(acc_raw.get("wave_invoice_create_status", "SAVED")).upper()
-    transfer_strategy = str(acc_raw.get("transfer_strategy", "manual_transfer"))
-
-    if deposit_strategy not in VALID_DEPOSIT_STRATEGIES:
-        raise ConfigError(
-            f"Invalid mirrored_invoice_deposit_strategy {deposit_strategy!r}; "
-            f"must be one of {sorted(VALID_DEPOSIT_STRATEGIES)}"
-        )
-    if mirror and deposit_strategy == "direct_income":
-        raise ConfigError(
-            "Invalid accounting config: mirrored_invoice_deposit_strategy='direct_income' "
-            "cannot be combined with mirror_harvest_invoices=true because it would double-count "
-            "revenue. Use 'ar_clearing' or 'manual_ui_payment', or set "
-            "mirror_harvest_invoices=false."
-        )
-    if invoice_status not in VALID_INVOICE_STATUSES:
-        raise ConfigError(
-            f"Invalid wave_invoice_create_status {invoice_status!r}; "
-            f"must be one of {sorted(VALID_INVOICE_STATUSES)}"
-        )
-    if transfer_strategy not in VALID_TRANSFER_STRATEGIES:
-        raise ConfigError(
-            f"Invalid transfer_strategy {transfer_strategy!r}; "
-            f"must be one of {sorted(VALID_TRANSFER_STRATEGIES)}"
-        )
-
     accounting = AccountingConfig(
-        mirror_harvest_invoices=mirror,
-        mirrored_invoice_deposit_strategy=deposit_strategy,
-        wave_invoice_create_status=invoice_status,
-        transfer_strategy=transfer_strategy,
         deposit_match_window_days=int(acc_raw.get("deposit_match_window_days", 7)),
         payroll_match_window_days=int(acc_raw.get("payroll_match_window_days", 5)),
         transfer_match_window_days=int(acc_raw.get("transfer_match_window_days", 5)),
@@ -268,7 +227,6 @@ def load_config(path: Path) -> AppConfig:
         endpoint=str(wave_raw.get("endpoint", "https://gql.waveapps.com/graphql/public")),
         business_id=str(wave_raw.get("business_id", "")),
         access_token=str(wave_raw.get("access_token", "")),
-        default_product_name=str(wave_raw.get("default_product_name", "Consulting Services")),
     )
 
     harvest_raw = raw.get("harvest", {})

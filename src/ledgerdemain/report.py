@@ -6,7 +6,6 @@ import re
 from collections import defaultdict
 from typing import Any
 
-from ledgerdemain.config import AppConfig
 from ledgerdemain.db import LedgerDB
 from ledgerdemain.models import GustoPayrollRun
 from ledgerdemain.money import ZERO, Money, format_money, parse_money
@@ -63,7 +62,6 @@ def _classify_imputed_gusto_benefits(
 
 def build_report(
     db: LedgerDB,
-    config: AppConfig,
     period: str | None = None,
 ) -> dict[str, Any]:
     """Build structured financial, reconciliation, payroll, and Wave checklist report."""
@@ -176,23 +174,6 @@ def build_report(
         if stx.status == "manual_transfer_required"
     ]
 
-    manual_invoice_payments = [
-        {
-            "staged_tx_id": stx.id,
-            "date": stx.tx_date,
-            "amount": format_money(stx.anchor_amount),
-            "description": stx.description,
-            "reason": stx.review_reason or stx.notes,
-        }
-        for stx in staged_txs
-        if stx.status == "manual_invoice_payment_required"
-        or (
-            config.accounting.mirror_harvest_invoices
-            and stx.category_rule == "harvest_deposit"
-            and stx.status in {"staged", "approved", "pushed"}
-        )
-    ]
-
     attention_items = [
         {
             "staged_tx_id": stx.id,
@@ -251,7 +232,6 @@ def build_report(
         },
         "wave_manual_checklist": {
             "transfers": manual_transfers,
-            "invoice_payments": manual_invoice_payments,
             "attention_required": attention_items,
         },
     }
@@ -344,13 +324,6 @@ def format_report_text(report: dict[str, Any]) -> str:
         lines.append(
             f"     * [tx #{tr['staged_tx_id']}] {tr['date']} {tr['source_account']} "
             f"{tr['direction']} ${tr['amount']} — {tr['reason']}"
-        )
-    lines.append(
-        f"   - Mirrored Invoices / Payments to verify in Wave UI ({len(chk['invoice_payments'])}):"
-    )
-    for ip in chk["invoice_payments"]:
-        lines.append(
-            f"     * [tx #{ip['staged_tx_id']}] {ip['date']} ${ip['amount']} — {ip['reason']}"
         )
     lines.append(f"   - Items Needing Review or Failed ({len(chk['attention_required'])}):")
     for att in chk["attention_required"]:

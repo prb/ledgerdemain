@@ -154,7 +154,7 @@ def test_officer_benefits_accounts_double_entry_balance() -> None:
 
 
 def test_scorp_benefits_tieout_balanced_when_split(tmp_path: Path) -> None:
-    cfg, db = _setup_workspace(tmp_path)
+    _cfg, db = _setup_workspace(tmp_path)
     try:
         cobra = Money(252229)
         hsa = Money(975000)
@@ -208,7 +208,7 @@ def test_scorp_benefits_tieout_balanced_when_split(tmp_path: Path) -> None:
             category_rule="Officer / Shareholder HSA Contributions",
         )
 
-        rep: dict[str, Any] = build_report(db, cfg)
+        rep: dict[str, Any] = build_report(db)
         tie = rep["scorp_benefits_tieout"]
         assert tie == {
             "imputed_run_count": 2,
@@ -232,7 +232,7 @@ def test_scorp_benefits_tieout_balanced_when_split(tmp_path: Path) -> None:
 
 
 def test_scorp_benefits_tieout_flags_unjournaled_month_and_hsa_gap(tmp_path: Path) -> None:
-    cfg, db = _setup_workspace(tmp_path)
+    _cfg, db = _setup_workspace(tmp_path)
     try:
         for i in range(1, 5):
             _add_imputed_gusto_run(db, idx=i, check_date="2026-11-02", cobra_amount=Money(252229))
@@ -263,7 +263,7 @@ def test_scorp_benefits_tieout_flags_unjournaled_month_and_hsa_gap(tmp_path: Pat
             category_rule="Officer / Shareholder HSA Contributions",
         )
 
-        rep = build_report(db, cfg)
+        rep = build_report(db)
         tie = rep["scorp_benefits_tieout"]
         assert tie["imputed_run_count"] == 5
         assert tie["gusto_health_insurance"] == "12611.45"
@@ -284,7 +284,7 @@ def test_scorp_benefits_tieout_flags_unjournaled_month_and_hsa_gap(tmp_path: Pat
         assert "Variance=$2521.88" in text
         assert "cross-month timing reconciles" not in text
 
-        oct_text = format_report_text(build_report(db, cfg, period="2026-10"))
+        oct_text = format_report_text(build_report(db, period="2026-10"))
         assert "cross-month timing reconciles" in oct_text
     finally:
         db.close()
@@ -293,7 +293,7 @@ def test_scorp_benefits_tieout_flags_unjournaled_month_and_hsa_gap(tmp_path: Pat
 def test_scorp_benefits_tieout_excludes_gusto_cash_payroll_and_tracks_unsplit(
     tmp_path: Path,
 ) -> None:
-    cfg, db = _setup_workspace(tmp_path)
+    _cfg, db = _setup_workspace(tmp_path)
     try:
         # Cash payroll debit matched to Gusto should NOT pollute S-Corp unsplit bucket
         _add_staged_bank_tx(
@@ -321,7 +321,7 @@ def test_scorp_benefits_tieout_excludes_gusto_cash_payroll_and_tracks_unsplit(
         )
         _add_imputed_gusto_run(db, idx=1, check_date="2026-11-02", cobra_amount=Money(252229))
 
-        rep = build_report(db, cfg)
+        rep = build_report(db)
         tie = rep["scorp_benefits_tieout"]
         assert tie["bank_health_insurance"] == "0.00"
         assert tie["bank_hsa"] == "0.00"

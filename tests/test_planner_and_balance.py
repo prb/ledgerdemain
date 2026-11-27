@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 
 from ledgerdemain.categorize import Categorizer
-from ledgerdemain.config import ConfigError, load_rules
+from ledgerdemain.config import load_rules
 from ledgerdemain.db import LedgerDB
 from ledgerdemain.models import (
     BankTransaction,
@@ -164,29 +164,10 @@ def test_validate_double_entry_all_nine_patterns_and_rejections() -> None:
         )
 
 
-def test_invalid_mirror_plus_direct_income_config_rejected(tmp_path: Path) -> None:
-    with pytest.raises(ConfigError):
-        make_test_config(tmp_path, mirror_harvest_invoices=True, deposit_strategy="direct_income")
-
-
-@pytest.mark.parametrize(
-    ("mirror", "strat", "expected_status", "expected_acc"),
-    [
-        (True, "ar_clearing", "staged", "invoice_payments_clearing"),
-        (True, "manual_ui_payment", "manual_invoice_payment_required", None),
-        (False, "direct_income", "staged", "revenue_default"),
-    ],
-)
-def test_harvest_accounting_strategies_and_payroll_clearing(
+def test_harvest_deposit_is_direct_income_and_payroll_clearing_nets_to_zero(
     tmp_path: Path,
-    mirror: bool,
-    strat: str,
-    expected_status: str,
-    expected_acc: str | None,
 ) -> None:
-    sub_dir = tmp_path / strat
-    sub_dir.mkdir()
-    cfg = make_test_config(sub_dir, mirror_harvest_invoices=mirror, deposit_strategy=strat)
+    cfg = make_test_config(tmp_path)
     rules = load_rules(cfg.general.rules_path)
     with LedgerDB(cfg.general.db_path) as db:
         db.init_schema()
@@ -259,12 +240,12 @@ def test_harvest_accounting_strategies_and_payroll_clearing(
         Reconciler(db, cfg).reconcile_all(confirm_high_confidence=True)
         summary = Planner(db, cfg, Categorizer(rules)).build_plan()
 
-        assert summary.staged_invoices == (1 if mirror else 0)
+        assert summary.staged_transactions == 4
         staged = db.list_staged_transactions()
         dep_tx = next(t for t in staged if t.anchor_direction == "DEPOSIT")
-        assert dep_tx.status == expected_status
-        if expected_acc:
-            assert dep_tx.line_items[0].account_key == expected_acc
+        assert dep_tx.status == "staged"
+        assert dep_tx.line_items[0].account_key == "revenue_default"
+        assert "(revenue_default)" in (dep_tx.notes or "")
 
         # Verify Payroll Taxes Payable & Benefits Payable net to $0.00
         tax_net = ZERO
@@ -280,19 +261,8 @@ def test_harvest_accounting_strategies_and_payroll_clearing(
         assert ben_net == ZERO
 
 
-@pytest.mark.parametrize(
-    ("strat", "expected_status"),
-    [
-        ("manual_transfer", "manual_transfer_required"),
-        ("clearing_account", "staged"),
-    ],
-)
-def test_cc_transfer_manual_vs_clearing_and_unpaired(
-    tmp_path: Path, strat: str, expected_status: str
-) -> None:
-    sub_dir = tmp_path / strat
-    sub_dir.mkdir()
-    cfg = make_test_config(sub_dir, transfer_strategy=strat)
+def test_cc_transfer_is_manual_and_unpaired_needs_review(tmp_path: Path) -> None:
+    cfg = make_test_config(tmp_path)
     rules = load_rules(cfg.general.rules_path)
     with LedgerDB(cfg.general.db_path) as db:
         db.init_schema()
@@ -330,75 +300,11 @@ def test_cc_transfer_manual_vs_clearing_and_unpaired(
         staged = db.list_staged_transactions()
         paired = [t for t in staged if t.anchor_amount == Money.parse("500.00")]
         assert len(paired) == 2
-        assert all(t.status == expected_status for t in paired)
-        if strat == "clearing_account":
-            assert paired[0].line_items[0].account_key == "cc_transfer_clearing"
-            assert paired[0].line_items[0].balance == "INCREASE"
-            assert paired[1].line_items[0].account_key == "cc_transfer_clearing"
-            assert paired[1].line_items[0].balance == "DECREASE"
+        assert all(t.status == "manual_transfer_required" for t in paired)
+        assert all(t.line_items == [] for t in paired)
 
         unpaired = next(t for t in staged if t.anchor_amount == Money.parse("250.00"))
         assert unpaired.status == "needs_review"
-
-
-def test_switching_off_invoice_mirroring_clears_unpushed_staged_invoices(
-    tmp_path: Path,
-) -> None:
-    mirror_cfg = make_test_config(
-        tmp_path, mirror_harvest_invoices=True, deposit_strategy="ar_clearing"
-    )
-    rules = load_rules(mirror_cfg.general.rules_path)
-    with LedgerDB(mirror_cfg.general.db_path) as db:
-        db.init_schema()
-        db.upsert_harvest_invoices(
-            [
-                HarvestInvoice(
-                    "201",
-                    "2001",
-                    "20",
-                    "Synthetic Client",
-                    "2026-03-01",
-                    "2026-03-31",
-                    "2026-03-10",
-                    "paid",
-                    "USD",
-                    Money.parse("1500.00"),
-                    ZERO,
-                    Money.parse("1500.00"),
-                    ZERO,
-                )
-            ]
-        )
-        db.upsert_bank_transactions(
-            [
-                _tx(
-                    "grasshopper",
-                    "2026-03-10",
-                    "SYNTHETIC CLIENT ACH",
-                    "1500.00",
-                    "DEPOSIT",
-                    "gh-inv-201",
-                )
-            ]
-        )
-        Reconciler(db, mirror_cfg).reconcile_all(confirm_high_confidence=True)
-        first_plan = Planner(db, mirror_cfg, Categorizer(rules)).build_plan()
-        assert first_plan.staged_invoices == 1
-        assert len(db.list_staged_invoices()) == 1
-        assert (
-            db.list_staged_transactions()[0].line_items[0].account_key
-            == "invoice_payments_clearing"
-        )
-
-        cash_cfg = make_test_config(
-            tmp_path, mirror_harvest_invoices=False, deposit_strategy="direct_income"
-        )
-        second_plan = Planner(db, cash_cfg, Categorizer(rules)).build_plan()
-        assert second_plan.staged_invoices == 0
-        assert db.list_staged_invoices() == []
-        staged_txs = db.list_staged_transactions()
-        assert len(staged_txs) == 1
-        assert staged_txs[0].line_items[0].account_key == "revenue_default"
 
 
 @pytest.mark.parametrize(

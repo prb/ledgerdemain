@@ -169,7 +169,7 @@ class WaveSyncService:
         # Ensure default product when pushing invoices
         default_product_id: str | None = None
         if approved_invoices:
-            prod_name = self.config.wave.default_product_name
+            prod_name = "Consulting Services"  # removed in the next commit
             existing_prod = self.db.find_wave_product_by_name(prod_name)
             if existing_prod is not None:
                 default_product_id = existing_prod.wave_id

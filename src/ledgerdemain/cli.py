@@ -33,10 +33,6 @@ rules_path = "rules.toml"
 currency = "USD"
 
 [accounting]
-mirror_harvest_invoices = true
-mirrored_invoice_deposit_strategy = "ar_clearing"
-wave_invoice_create_status = "SAVED"
-transfer_strategy = "manual_transfer"
 deposit_match_window_days = 7
 payroll_match_window_days = 5
 transfer_match_window_days = 5
@@ -46,7 +42,6 @@ auto_confirm_threshold = 0.90
 endpoint = "https://gql.waveapps.com/graphql/public"
 business_id = "${WAVE_BUSINESS_ID}"
 access_token = "${WAVE_ACCESS_TOKEN}"
-default_product_name = "Consulting Services"
 
 [harvest]
 base_url = "https://api.harvestapp.com/v2"
@@ -75,7 +70,6 @@ grasshopper_money_market = "Grasshopper Money Market"
 capital_one_card = "Capital One Credit Card"
 revenue_default = "Sales"
 interest_income = "Interest Income"
-invoice_payments_clearing = "Invoice Payments Clearing"
 merchant_fees = "Merchant Processing Fees"
 payroll_gross_wages = "Payroll - Gross Wages"
 payroll_reimbursements = "Employee Reimbursements"
@@ -87,8 +81,6 @@ payroll_taxes_payable = "Payroll Taxes Payable"
 payroll_benefits_payable = "Payroll Benefits Payable"
 payroll_processing_fees = "Payroll Processing Fees"
 contractors_expense = "Contractors"
-cc_transfer_clearing = "Credit Card Payment Clearing"
-bank_transfer_clearing = "Bank Transfer Clearing"
 software_subscriptions = "Software & Subscriptions"
 cloud_hosting = "Cloud Hosting & Infrastructure"
 office_supplies = "Office Supplies"
@@ -594,11 +586,9 @@ def _cmd_plan(args: argparse.Namespace) -> int:
     with db:
         summary = Planner(db, cfg, Categorizer(rules)).build_plan()
     print(
-        f"Plan built: {summary.staged_invoices} staged invoice(s), "
-        f"{summary.staged_transactions} staged tx(s), "
+        f"Plan built: {summary.staged_transactions} staged tx(s), "
         f"{summary.needs_review} needing review, "
-        f"{summary.manual_transfers} manual transfer(s), "
-        f"{summary.manual_invoice_payments} manual invoice payment(s)."
+        f"{summary.manual_transfers} manual transfer(s)."
     )
     return 0
 
@@ -772,9 +762,9 @@ def _cmd_push(args: argparse.Namespace) -> int:
 
 
 def _cmd_report(args: argparse.Namespace) -> int:
-    cfg, db = _open_context(Path(args.config))
+    _cfg, db = _open_context(Path(args.config))
     with db:
-        report = build_report(db, cfg, period=args.period)
+        report = build_report(db, period=args.period)
     if args.format == "json":
         print(json.dumps(report, indent=2))
     else:
@@ -874,9 +864,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_rec.set_defaults(func=_cmd_reconcile)
 
     # plan
-    p_plan = subparsers.add_parser(
-        "plan", help="Stage balanced Wave transactions and mirrored invoices"
-    )
+    p_plan = subparsers.add_parser("plan", help="Stage balanced Wave transactions")
     p_plan.set_defaults(func=_cmd_plan)
 
     # review
@@ -889,7 +877,6 @@ def build_parser() -> argparse.ArgumentParser:
             "staged",
             "approved",
             "manual_transfer_required",
-            "manual_invoice_payment_required",
             "failed",
             "outcome_unknown",
             "pushed",

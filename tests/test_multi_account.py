@@ -307,16 +307,10 @@ def test_grasshopper_live_narmi_schema_cents_settled_at_and_links_pagination() -
 
 
 def test_bank_transfer_reconciliation_and_harvest_isolation(tmp_path: Path) -> None:
-    for strat, expected_status in (
-        ("manual_transfer", "manual_transfer_required"),
-        ("clearing_account", "staged"),
-    ):
-        sub_dir = tmp_path / strat
-        sub_dir.mkdir()
-        cfg_path = write_test_workspace_config(sub_dir, transfer_strategy=strat)
-        with (sub_dir / "rules.toml").open("a", encoding="utf-8") as fh:
-            fh.write(
-                """
+    cfg_path = write_test_workspace_config(tmp_path)
+    with (tmp_path / "rules.toml").open("a", encoding="utf-8") as fh:
+        fh.write(
+            """
 [[rules]]
 name = "Bank Interest Earned"
 priority = 15
@@ -325,119 +319,110 @@ direction = "DEPOSIT"
 description_regex = "(?i)\\\\binterest\\\\b"
 account_key = "interest_income"
 """
-            )
-        text = cfg_path.read_text(encoding="utf-8").replace(
-            "\n[accounts]\n",
-            '\n[accounts]\ngrasshopper_savings = "Grasshopper Savings"\n'
-            'grasshopper_money_market = "Grasshopper Money Market"\n'
-            'interest_income = "Interest Income"\n'
-            'bank_transfer_clearing = "Bank Transfer Clearing"\n',
         )
-        cfg_path.write_text(text, encoding="utf-8")
-        cfg = load_config(cfg_path)
-        rules = load_rules(cfg.general.rules_path)
+    text = cfg_path.read_text(encoding="utf-8").replace(
+        "\n[accounts]\n",
+        '\n[accounts]\ngrasshopper_savings = "Grasshopper Savings"\n'
+        'grasshopper_money_market = "Grasshopper Money Market"\n'
+        'interest_income = "Interest Income"\n',
+    )
+    cfg_path.write_text(text, encoding="utf-8")
+    cfg = load_config(cfg_path)
+    rules = load_rules(cfg.general.rules_path)
 
-        with LedgerDB(cfg.general.db_path) as db:
-            db.init_schema()
-            # Open Harvest invoice of the exact same amount as the transfer AND interest amount
-            db.upsert_harvest_invoices(
-                [
-                    HarvestInvoice(
-                        "inv-1",
-                        "1001",
-                        "c1",
-                        "Acme Corp",
-                        "2026-11-01",
-                        "2026-12-01",
-                        None,
-                        "open",
-                        "USD",
-                        Money.parse("2500.00"),
-                        ZERO,
-                        Money.parse("2500.00"),
-                        Money.parse("2500.00"),
-                    ),
-                    HarvestInvoice(
-                        "inv-2",
-                        "1002",
-                        "c1",
-                        "Acme Corp",
-                        "2026-11-01",
-                        "2026-12-01",
-                        None,
-                        "open",
-                        "USD",
-                        Money.parse("42.15"),
-                        ZERO,
-                        Money.parse("42.15"),
-                        Money.parse("42.15"),
-                    ),
-                ]
-            )
-            db.upsert_bank_transactions(
-                [
-                    BankTransaction(
-                        source="grasshopper",
-                        account_key="grasshopper_savings",
-                        external_id=None,
-                        fingerprint="fp-sav-out",
-                        tx_date="2026-11-05",
-                        posted_date="2026-11-05",
-                        description="INTERNAL TRANSFER TO MM",
-                        normalized_description="INTERNAL TRANSFER TO MM",
-                        amount=Money.parse("2500.00"),
-                        direction="WITHDRAWAL",
-                    ),
-                    BankTransaction(
-                        source="grasshopper",
-                        account_key="grasshopper_money_market",
-                        external_id=None,
-                        fingerprint="fp-mm-in",
-                        tx_date="2026-11-05",
-                        posted_date="2026-11-05",
-                        description="INTERNAL TRANSFER FROM SAV",
-                        normalized_description="INTERNAL TRANSFER FROM SAV",
-                        amount=Money.parse("2500.00"),
-                        direction="DEPOSIT",
-                    ),
-                    BankTransaction(
-                        source="grasshopper",
-                        account_key="grasshopper_money_market",
-                        external_id=None,
-                        fingerprint="fp-mm-int",
-                        tx_date="2026-11-10",
-                        posted_date="2026-11-10",
-                        description="Interest Payment",
-                        normalized_description="INTEREST PAYMENT",
-                        amount=Money.parse("42.15"),
-                        direction="DEPOSIT",
-                    ),
-                ]
-            )
+    with LedgerDB(cfg.general.db_path) as db:
+        db.init_schema()
+        # Open Harvest invoice of the exact same amount as the transfer AND interest amount
+        db.upsert_harvest_invoices(
+            [
+                HarvestInvoice(
+                    "inv-1",
+                    "1001",
+                    "c1",
+                    "Acme Corp",
+                    "2026-11-01",
+                    "2026-12-01",
+                    None,
+                    "open",
+                    "USD",
+                    Money.parse("2500.00"),
+                    ZERO,
+                    Money.parse("2500.00"),
+                    Money.parse("2500.00"),
+                ),
+                HarvestInvoice(
+                    "inv-2",
+                    "1002",
+                    "c1",
+                    "Acme Corp",
+                    "2026-11-01",
+                    "2026-12-01",
+                    None,
+                    "open",
+                    "USD",
+                    Money.parse("42.15"),
+                    ZERO,
+                    Money.parse("42.15"),
+                    Money.parse("42.15"),
+                ),
+            ]
+        )
+        db.upsert_bank_transactions(
+            [
+                BankTransaction(
+                    source="grasshopper",
+                    account_key="grasshopper_savings",
+                    external_id=None,
+                    fingerprint="fp-sav-out",
+                    tx_date="2026-11-05",
+                    posted_date="2026-11-05",
+                    description="INTERNAL TRANSFER TO MM",
+                    normalized_description="INTERNAL TRANSFER TO MM",
+                    amount=Money.parse("2500.00"),
+                    direction="WITHDRAWAL",
+                ),
+                BankTransaction(
+                    source="grasshopper",
+                    account_key="grasshopper_money_market",
+                    external_id=None,
+                    fingerprint="fp-mm-in",
+                    tx_date="2026-11-05",
+                    posted_date="2026-11-05",
+                    description="INTERNAL TRANSFER FROM SAV",
+                    normalized_description="INTERNAL TRANSFER FROM SAV",
+                    amount=Money.parse("2500.00"),
+                    direction="DEPOSIT",
+                ),
+                BankTransaction(
+                    source="grasshopper",
+                    account_key="grasshopper_money_market",
+                    external_id=None,
+                    fingerprint="fp-mm-int",
+                    tx_date="2026-11-10",
+                    posted_date="2026-11-10",
+                    description="Interest Payment",
+                    normalized_description="INTEREST PAYMENT",
+                    amount=Money.parse("42.15"),
+                    direction="DEPOSIT",
+                ),
+            ]
+        )
 
-            summary = Reconciler(db, cfg).reconcile_all(confirm_high_confidence=True)
-            assert summary.bank_transfer_matches == 1
-            assert summary.harvest_matches == 0
+        summary = Reconciler(db, cfg).reconcile_all(confirm_high_confidence=True)
+        assert summary.bank_transfer_matches == 1
+        assert summary.harvest_matches == 0
 
-            Planner(db, cfg, Categorizer(rules)).build_plan()
-            staged = db.list_staged_transactions()
-            xfer_legs = [t for t in staged if t.anchor_amount == Money.parse("2500.00")]
-            assert len(xfer_legs) == 2
-            assert all(t.status == expected_status for t in xfer_legs)
-            if strat == "manual_transfer":
-                assert (
-                    "grasshopper_savings -> grasshopper_money_market" in xfer_legs[0].review_reason
-                )
-            else:
-                assert xfer_legs[0].line_items[0].account_key == "bank_transfer_clearing"
-                assert xfer_legs[0].line_items[0].balance == "INCREASE"
-                assert xfer_legs[1].line_items[0].account_key == "bank_transfer_clearing"
-                assert xfer_legs[1].line_items[0].balance == "DECREASE"
+        Planner(db, cfg, Categorizer(rules)).build_plan()
+        staged = db.list_staged_transactions()
+        xfer_legs = [t for t in staged if t.anchor_amount == Money.parse("2500.00")]
+        assert len(xfer_legs) == 2
+        assert all(t.status == "manual_transfer_required" for t in xfer_legs)
+        assert "grasshopper_savings -> grasshopper_money_market" in xfer_legs[0].review_reason
 
-            interest_tx = next(t for t in staged if t.anchor_amount == Money.parse("42.15"))
-            assert interest_tx.status == "staged"
-            assert interest_tx.line_items[0].account_key == "interest_income"
-            assert interest_tx.line_items[0].balance == "INCREASE"
+        interest_tx = next(t for t in staged if t.anchor_amount == Money.parse("42.15"))
+        assert interest_tx.status == "staged"
+        assert interest_tx.line_items[0].account_key == "interest_income"
+        assert interest_tx.line_items[0].balance == "INCREASE"
 
 
 def test_cli_discovery_wave_businesses_and_grasshopper_accounts(

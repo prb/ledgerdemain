@@ -23,7 +23,7 @@ uv sync --extra dev
 # 1. Initialize workspace (creates ledgerdemain.toml, rules.toml, data/, inbox/)
 uv run ledgerdemain init
 
-# 2. Configure API credentials in your environment & customize ledgerdemain.toml / rules.toml
+# 2. Store API tokens in macOS Keychain & customize ledgerdemain.toml / rules.toml
 # 3. Sync your Wave Chart of Accounts, customers, and products
 uv run ledgerdemain wave sync-meta
 
@@ -60,18 +60,27 @@ uv run --extra dev pytest -v
 
 ## Source Setup
 
+### Secrets & macOS Keychain
+- API tokens (`WAVE_ACCESS_TOKEN`, `HARVEST_ACCESS_TOKEN`, `GRASSHOPPER_ACCESS_TOKEN`, `GRASSHOPPER_HEADER_SECRET`) use explicit `${keychain:NAME}` placeholders in `ledgerdemain.toml`, resolved at runtime via `/usr/bin/security` under literal `[general] keychain_service` (default `"ledgerdemain"`, or e.g. `"ledgerdemain:prod"` to namespace environments):
+  ```bash
+  security add-generic-password -U -s ledgerdemain -a <NAME> -w
+  ```
+- Store printable ASCII tokens only (`security -w` prints values with non-printable bytes hex-encoded).
+- Every referenced `${keychain:NAME}` placeholder is read when loading configuration and fails if missing; blank out (`""`) or remove placeholders for APIs you do not use so `ingest all` skips them.
+- Non-secret IDs and environment overrides use `${ENV_VAR}` placeholders resolved strictly from process environment variables (`os.environ`); `.env` files are not loaded.
+
 ### 1. Wave Accounting (GraphQL API)
 - Requires an active **Wave Pro** (or Advisors) plan with newer accounting (`isClassicAccounting = false`).
-- Put `WAVE_ACCESS_TOKEN` (and `WAVE_BUSINESS_ID`) in `.env` (auto-loaded from the config directory).
+- Store `WAVE_ACCESS_TOKEN` in macOS Keychain under service `ledgerdemain` (`${keychain:WAVE_ACCESS_TOKEN}`), and set `WAVE_BUSINESS_ID` in `os.environ` (or directly in `ledgerdemain.toml`).
 - Run `uv run ledgerdemain wave list-businesses` if you need to look up your `WAVE_BUSINESS_ID`.
 - Run `uv run ledgerdemain wave sync-meta` to cache your Chart of Accounts, customers, and products, then map your account names/IDs under `[accounts]` in `ledgerdemain.toml`.
 
 ### 2. Harvest (REST API v2)
 - Generate a Personal Access Token and Account ID in Harvest Developers (`https://id.getharvest.com/developers`).
-- Set `HARVEST_ACCOUNT_ID` and `HARVEST_ACCESS_TOKEN` in `.env`, plus `harvest.user_agent` with your app name and contact email.
+- Store `HARVEST_ACCESS_TOKEN` in macOS Keychain (`${keychain:HARVEST_ACCESS_TOKEN}`), and set `HARVEST_ACCOUNT_ID` (via `os.environ` or `ledgerdemain.toml`) plus `harvest.user_agent` with your app name and contact email.
 
 ### 3. Grasshopper Bank (Multi-Account Read-Only API)
-- In Grasshopper online banking, go to **Settings -> API Banking**, accept the terms, **whitelist your static IP address**, and save both the Bearer Token (`GRASSHOPPER_ACCESS_TOKEN`) and Header Secret (`GRASSHOPPER_HEADER_SECRET`) in `.env`.
+- In Grasshopper online banking, go to **Settings -> API Banking**, accept the terms, **whitelist your static IP address**, and store both the Bearer Token (`GRASSHOPPER_ACCESS_TOKEN`) and Header Secret (`GRASSHOPPER_HEADER_SECRET`) in macOS Keychain (`${keychain:GRASSHOPPER_ACCESS_TOKEN}`, `${keychain:GRASSHOPPER_HEADER_SECRET}`).
 - Run `uv run ledgerdemain grasshopper list-accounts` to retrieve the `id` for both your **Savings** and **Money Market** accounts, then map them under `[[grasshopper.accounts]]` in `ledgerdemain.toml` (`grasshopper_savings`, `grasshopper_money_market`).
 - Grasshopper is ingested only through the API. Internal Savings <-> Money Market transfers reconcile automatically. On the first sync in a fresh database, pass `ingest grasshopper --from YYYY-MM-DD` to set how far back to go. Files left in `inbox/grasshopper/` are reported as failures by `ingest all`.
 

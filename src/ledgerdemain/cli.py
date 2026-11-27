@@ -31,6 +31,7 @@ db_path = "data/ledgerdemain.db"
 inbox_dir = "inbox"
 rules_path = "rules.toml"
 currency = "USD"
+keychain_service = "ledgerdemain"
 
 [accounting]
 mirror_harvest_invoices = true
@@ -45,19 +46,19 @@ auto_confirm_threshold = 0.90
 [wave]
 endpoint = "https://gql.waveapps.com/graphql/public"
 business_id = "${WAVE_BUSINESS_ID}"
-access_token = "${WAVE_ACCESS_TOKEN}"
+access_token = "${keychain:WAVE_ACCESS_TOKEN}"
 default_product_name = "Consulting Services"
 
 [harvest]
 base_url = "https://api.harvestapp.com/v2"
 account_id = "${HARVEST_ACCOUNT_ID}"
-access_token = "${HARVEST_ACCESS_TOKEN}"
+access_token = "${keychain:HARVEST_ACCESS_TOKEN}"
 user_agent = "Ledgerdemain (accounting@example.com)"
 
 [grasshopper]
 base_url = "https://api.grasshopper.bank/v1"
-access_token = "${GRASSHOPPER_ACCESS_TOKEN}"
-header_secret = "${GRASSHOPPER_HEADER_SECRET}"
+access_token = "${keychain:GRASSHOPPER_ACCESS_TOKEN}"
+header_secret = "${keychain:GRASSHOPPER_HEADER_SECRET}"
 header_secret_name = "X-API-Secret"
 
 [[grasshopper.accounts]]
@@ -200,7 +201,7 @@ def _cmd_init(args: argparse.Namespace) -> int:
     _copy_template_or_write("ledgerdemain.example.toml", cfg_path, _DEFAULT_CONFIG_FALLBACK)
     _copy_template_or_write("rules.example.toml", rules_path, _DEFAULT_RULES_FALLBACK)
 
-    cfg = load_config(cfg_path)
+    cfg = load_config(cfg_path, resolve_keychain=False)
     with LedgerDB(cfg.general.db_path) as db:
         db.init_schema()
 

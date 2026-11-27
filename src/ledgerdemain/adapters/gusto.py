@@ -18,7 +18,7 @@ class GustoParseError(ValueError):
     """Raised when a Gusto CSV export cannot be parsed or fails accounting checks."""
 
 
-_TOLERANCE = Money(2)
+_TOLERANCE = Money(2)  # 2 cents allowed for per-row/section rounding drift
 
 _SUMMARY_EXACT = frozenset(
     {
@@ -120,7 +120,13 @@ _CONTRACTOR_AMOUNT_COLS = ("amount", "payment amount", "total paid", "gross pay"
 
 
 class GustoPayrollCsvAdapter:
-    """Parse Gusto Payroll Journal and Contractor Payment CSV exports."""
+    """Parse Gusto Payroll Journal and Contractor Payment CSV exports.
+
+    Accounting checks enforce net-pay, employer-cost, and imputed-benefit
+    identities; the net-pay check assumes no uncategorized post-tax
+    deductions or garnishments sit outside ``employee_taxes`` and
+    ``employee_benefits``.
+    """
 
     source_name = "gusto"
 
@@ -470,24 +476,30 @@ class GustoPayrollCsvAdapter:
         # Normalize net_pay vs reimbursements depending on report convention:
         # Either raw_net_pay = gross - ee_tax - ee_ben (excluding reimbursements),
         # or raw_net_pay = gross + reimbursements - ee_tax - ee_ben (including reimbursements).
-        expected_without_reimb = gross_wages - employee_taxes - employee_benefits
-        expected_with_reimb = expected_without_reimb + reimbursements
-        if (
-            reimbursements > ZERO
-            and abs(raw_net_pay - expected_with_reimb) <= _TOLERANCE
-            and abs(raw_net_pay - expected_without_reimb) > _TOLERANCE
-        ):
+        # When Gross Earnings includes imputed_benefits, also allow expected - imputed_benefits.
+        expected_without_reimb = [gross_wages - employee_taxes - employee_benefits]
+        if imputed_benefits > ZERO:
+            expected_without_reimb.append(expected_without_reimb[0] - imputed_benefits)
+        expected_with_reimb = [exp + reimbursements for exp in expected_without_reimb]
+        matches_with_reimb = any(
+            abs(raw_net_pay - exp) <= _TOLERANCE for exp in expected_with_reimb
+        )
+        matches_without_reimb = any(
+            abs(raw_net_pay - exp) <= _TOLERANCE for exp in expected_without_reimb
+        )
+        if reimbursements > ZERO and matches_with_reimb and not matches_without_reimb:
             net_pay = raw_net_pay - reimbursements
         else:
             net_pay = raw_net_pay
 
         non_cash_imputed = (
-            abs(net_pay) <= _TOLERANCE
+            net_pay == ZERO
             and reimbursements == ZERO
             and employee_taxes == ZERO
+            and employer_taxes == ZERO
             and employee_benefits == ZERO
             and employer_benefits > ZERO
-            and abs(gross_wages - employer_benefits) <= _TOLERANCE
+            and abs(gross_wages - employer_benefits) <= Money(1)
         )
         self._validate_run_accounting(
             check_date=check_date,
@@ -557,8 +569,22 @@ class GustoPayrollCsvAdapter:
         has_employer_cost: bool,
         reported_employer_cost: Money,
     ) -> None:
-        if non_cash_imputed:
-            if abs(net_pay) > _TOLERANCE:
+        """Validate aggregated payroll run totals against accounting identities.
+
+        The net-pay check assumes no uncategorized post-tax deductions or
+        garnishments sit outside ``employee_taxes`` and ``employee_benefits``.
+        """
+        is_taxable_imputed_only = (
+            net_pay == ZERO
+            and reimbursements == ZERO
+            and employee_taxes == ZERO
+            and employee_benefits == ZERO
+            and employer_taxes > ZERO
+            and employer_benefits > ZERO
+            and abs(gross_wages - employer_benefits) <= _TOLERANCE
+        )
+        if non_cash_imputed or is_taxable_imputed_only:
+            if net_pay != ZERO:
                 raise GustoParseError(
                     f"Gusto imputed run {check_date} has non-zero net pay: {format_money(net_pay)}"
                 )
@@ -584,9 +610,9 @@ class GustoPayrollCsvAdapter:
                     )
             return
 
-        if imputed_benefits > ZERO or (
+        if (imputed_benefits > ZERO and abs(gross_wages - imputed_benefits) <= _TOLERANCE) or (
             s_corp_employer_benefits > ZERO
-            and abs(net_pay) <= _TOLERANCE
+            and net_pay == ZERO
             and abs(gross_wages - employer_benefits) > _TOLERANCE
         ):
             raise GustoParseError(
@@ -597,7 +623,10 @@ class GustoPayrollCsvAdapter:
             )
 
         expected_net = gross_wages - employee_taxes - employee_benefits
-        if abs(net_pay - expected_net) > _TOLERANCE:
+        valid_nets = [expected_net]
+        if imputed_benefits > ZERO:
+            valid_nets.append(expected_net - imputed_benefits)
+        if not any(abs(net_pay - expected) <= _TOLERANCE for expected in valid_nets):
             raise GustoParseError(
                 f"Gusto run {check_date} net pay mismatch: "
                 f"net_pay={format_money(net_pay)}, expected={format_money(expected_net)}"
@@ -605,13 +634,15 @@ class GustoPayrollCsvAdapter:
 
         if has_employer_cost:
             expected_er_cost = gross_wages + employer_taxes + employer_benefits
-            expected_er_cost_with_reimb = expected_er_cost + reimbursements
-            matches_no_reimb = abs(reported_employer_cost - expected_er_cost) <= _TOLERANCE
-            matches_with_reimb = (
-                reimbursements > ZERO
-                and abs(reported_employer_cost - expected_er_cost_with_reimb) <= _TOLERANCE
-            )
-            if not matches_no_reimb and not matches_with_reimb:
+            er_cost_bases = [expected_er_cost]
+            if imputed_benefits > ZERO and employer_benefits > ZERO:
+                er_cost_bases.append(expected_er_cost - imputed_benefits)
+            valid_er_costs = list(er_cost_bases)
+            if reimbursements > ZERO:
+                valid_er_costs.extend(base + reimbursements for base in er_cost_bases)
+            if not any(
+                abs(reported_employer_cost - expected) <= _TOLERANCE for expected in valid_er_costs
+            ):
                 raise GustoParseError(
                     f"Gusto run {check_date} employer cost mismatch: "
                     f"reported={format_money(reported_employer_cost)}, "

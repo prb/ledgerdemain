@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import contextlib
+import io
 import json
 import urllib.parse
 from collections.abc import Callable
@@ -17,6 +19,7 @@ from ledgerdemain.adapters.gusto import GustoParseError, GustoPayrollCsvAdapter
 from ledgerdemain.adapters.harvest import HarvestApiAdapter, HarvestCsvAdapter
 from ledgerdemain.adapters.ofx import OfxTransactionParser
 from ledgerdemain.categorize import Categorizer
+from ledgerdemain.cli import main
 from ledgerdemain.config import GrasshopperConfig, HarvestConfig
 from ledgerdemain.db import LedgerDB, make_bank_fingerprint
 from ledgerdemain.http_client import HttpClient, HttpResponse
@@ -35,6 +38,7 @@ from tests.fixtures import (
     SAMPLE_OFX_SGML,
     create_synthetic_pdf,
     make_test_config,
+    write_test_workspace_config,
 )
 
 HandlerFn = Callable[[str, str, dict[str, str], bytes | None], HttpResponse]
@@ -898,9 +902,10 @@ def test_gusto_accounting_sanity_checks_catch_renamed_tax_columns_and_corrupt_im
     p_imp_tax.write_text(valid_imputed_with_tax, encoding="utf-8")
     imp_runs = adapter.parse_file(p_imp_tax)
     assert len(imp_runs) == 1
-    assert imp_runs[0].raw["non_cash_imputed_benefits"] is True
+    assert imp_runs[0].raw["non_cash_imputed_benefits"] is False
     assert imp_runs[0].employer_taxes == Money.parse("38.25")
     assert imp_runs[0].employer_benefits == Money.parse("500.00")
+    assert imp_runs[0].total_tax_debit == Money.parse("38.25")
 
 
 def test_gusto_colon_and_to_metadata_formats_preserve_fingerprint(tmp_path: Path) -> None:
@@ -1006,3 +1011,156 @@ def test_gusto_cash_reimbursements_scorp_zero_gross_and_overrides(tmp_path: Path
     assert len(ovr_runs) == 1
     assert ovr_runs[0].gross_wages == Money.parse("2000.00")
     assert ovr_runs[0].net_pay == Money.parse("1600.00")
+
+
+def test_gusto_cash_runs_with_imputed_benefits_tiny_net_and_corrupt_imputed_only(
+    tmp_path: Path,
+) -> None:
+    adapter = GustoPayrollCsvAdapter()
+
+    # 1. Cash run with (Imputed) column where Gross Earnings excludes imputed benefits
+    kai_repro = "\n".join(
+        [
+            (
+                "Check Date,Employee,Gross Earnings,Employee Taxes,"
+                "Employer Taxes,Health (Imputed),Net Pay"
+            ),
+            "2026-03-01,Owner,5000.00,1000.00,300.00,200.00,4000.00",
+        ]
+    )
+    p_kai = tmp_path / "kai_repro.csv"
+    p_kai.write_text(kai_repro, encoding="utf-8")
+    kai_runs = adapter.parse_file(p_kai)
+    assert len(kai_runs) == 1
+    assert kai_runs[0].raw["non_cash_imputed_benefits"] is False
+    assert kai_runs[0].gross_wages == Money.parse("5000.00")
+    assert kai_runs[0].net_pay == Money.parse("4000.00")
+
+    # 2. Cash run where Gross Earnings includes imputed benefits (and with Company Contrib + Cost)
+    gross_incl_imputed = "\n".join(
+        [
+            (
+                "Check Date,Employee,Gross Earnings,Health (Imputed),"
+                "Employee Taxes,Employer Taxes,Net Pay"
+            ),
+            "2026-03-15,Owner,5200.00,200.00,1000.00,300.00,4000.00",
+        ]
+    )
+    p_incl = tmp_path / "gross_incl_imputed.csv"
+    p_incl.write_text(gross_incl_imputed, encoding="utf-8")
+    incl_runs = adapter.parse_file(p_incl)
+    assert len(incl_runs) == 1
+    assert incl_runs[0].raw["non_cash_imputed_benefits"] is False
+    assert incl_runs[0].gross_wages == Money.parse("5200.00")
+    assert incl_runs[0].net_pay == Money.parse("4000.00")
+
+    gross_incl_with_cost = "\n".join(
+        [
+            (
+                "Check Date,Employee,Gross Earnings,Health (Imputed),"
+                "Health (Company Contribution),Employee Taxes,Employer Taxes,"
+                "Reimbursements,Net Pay,Employer Cost"
+            ),
+            "2026-03-20,Owner,5200.00,200.00,200.00,1000.00,300.00,150.00,4150.00,5650.00",
+        ]
+    )
+    p_incl_cost = tmp_path / "gross_incl_imputed_cost.csv"
+    p_incl_cost.write_text(gross_incl_with_cost, encoding="utf-8")
+    incl_cost_runs = adapter.parse_file(p_incl_cost)
+    assert len(incl_cost_runs) == 1
+    assert incl_cost_runs[0].raw["non_cash_imputed_benefits"] is False
+    assert incl_cost_runs[0].net_pay == Money.parse("4000.00")
+
+    # 3. Tiny non-zero net pay ($0.01 and $0.02) must NOT be reclassified as non-cash imputed
+    for cents_str in ("0.01", "0.02"):
+        tiny_csv = "\n".join(
+            [
+                (
+                    "Check Date,Employee,Gross Earnings,Health (Company Contribution),"
+                    "Employee Taxes,Employer Taxes,Net Pay"
+                ),
+                f"2026-04-01,Owner,{cents_str},{cents_str},0.00,0.00,{cents_str}",
+            ]
+        )
+        p_tiny = tmp_path / f"tiny_{cents_str}.csv"
+        p_tiny.write_text(tiny_csv, encoding="utf-8")
+        tiny_runs = adapter.parse_file(p_tiny)
+        assert len(tiny_runs) == 1
+        assert tiny_runs[0].raw["non_cash_imputed_benefits"] is False
+        assert tiny_runs[0].net_pay == Money.parse(cents_str)
+
+    # 4. Corrupt imputed-only run missing company contribution fails loudly
+    corrupt_missing_er_ben = "\n".join(
+        [
+            "Check Date,Employee,Gross Earnings,Medical (Imputed),Net Pay",
+            "2026-05-01,Owner,2522.29,2522.29,0.00",
+        ]
+    )
+    p_corrupt = tmp_path / "corrupt_missing_er_ben.csv"
+    p_corrupt.write_text(corrupt_missing_er_ben, encoding="utf-8")
+    with pytest.raises(GustoParseError, match="imputed run"):
+        adapter.parse_file(p_corrupt)
+
+
+def _run_cli_capture(cfg_path: Path, argv: list[str]) -> tuple[int, str, str]:
+    stdout_buf = io.StringIO()
+    stderr_buf = io.StringIO()
+    with contextlib.redirect_stdout(stdout_buf), contextlib.redirect_stderr(stderr_buf):
+        code = main(["--config", str(cfg_path), *argv])
+    return code, stdout_buf.getvalue(), stderr_buf.getvalue()
+
+
+def test_cli_gusto_ingest_file_failure_and_inbox_partial_success(tmp_path: Path) -> None:
+    cfg_path = write_test_workspace_config(tmp_path, include_api_creds=False)
+    bad_csv = "\n".join(
+        [
+            "Check Date,Employee,Gross Earnings,Medical (Imputed),Net Pay",
+            "2026-05-01,Owner,2522.29,2522.29,0.00",
+        ]
+    )
+
+    # (a) Explicit --file <bad.csv> fails immediately with exit code 2 and stderr error
+    explicit_bad = tmp_path / "explicit_bad.csv"
+    explicit_bad.write_text(bad_csv, encoding="utf-8")
+    code, _, err = _run_cli_capture(cfg_path, ["ingest", "gusto", "--file", str(explicit_bad)])
+    assert code == 2
+    assert "Error:" in err
+    with LedgerDB(tmp_path / "data/ledgerdemain.db") as db:
+        assert db.list_gusto_payroll_runs() == []
+
+    # (b) Inbox with corrupt + valid CSV persists valid run, reports bad file, returns 2
+    gusto_inbox = tmp_path / "inbox/gusto"
+    gusto_inbox.mkdir(parents=True, exist_ok=True)
+    (gusto_inbox / "01_corrupt.csv").write_text(bad_csv, encoding="utf-8")
+    (gusto_inbox / "02_valid.csv").write_text(SAMPLE_GUSTO_PAYROLL_CSV, encoding="utf-8")
+
+    code, out, err = _run_cli_capture(cfg_path, ["ingest", "gusto"])
+    assert code == 2
+    assert "Gusto: 1 file(s), read 1, inserted 1 payroll run(s)." in out
+    assert "Error ingesting Gusto (01_corrupt.csv):" in err
+    assert "Ingest completed with 1 failed file(s): 01_corrupt.csv" in err
+    with LedgerDB(tmp_path / "data/ledgerdemain.db") as db:
+        runs = db.list_gusto_payroll_runs()
+        assert len(runs) == 1
+        assert runs[0].gross_wages == Money.parse("4500.00")
+        assert runs[0].net_pay == Money.parse("3555.75")
+
+    # (c) `ingest all` finishes remaining sources, persists valid Gusto run, returns 2
+    all_ws = tmp_path / "all_ws"
+    all_ws.mkdir()
+    all_cfg = write_test_workspace_config(all_ws, include_api_creds=False)
+    (all_ws / "inbox/harvest").mkdir(parents=True, exist_ok=True)
+    (all_ws / "inbox/harvest/invoices.csv").write_text(SAMPLE_HARVEST_CSV, encoding="utf-8")
+    (all_ws / "inbox/gusto").mkdir(parents=True, exist_ok=True)
+    (all_ws / "inbox/gusto/01_corrupt.csv").write_text(bad_csv, encoding="utf-8")
+    (all_ws / "inbox/gusto/02_valid.csv").write_text(SAMPLE_GUSTO_PAYROLL_CSV, encoding="utf-8")
+
+    code, out, err = _run_cli_capture(all_cfg, ["ingest", "all"])
+    assert code == 2
+    assert "Harvest CSV (invoices.csv): 3 invoices." in out
+    assert "Gusto (02_valid.csv): read 1, inserted 1 run(s)." in out
+    assert "Error ingesting Gusto (01_corrupt.csv):" in err
+    assert "Ingest completed with 1 failed file(s): 01_corrupt.csv" in err
+    with LedgerDB(all_ws / "data/ledgerdemain.db") as db:
+        assert len(db.list_gusto_payroll_runs()) == 1
+        assert len(db.list_harvest_invoices()) == 3

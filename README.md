@@ -1,6 +1,6 @@
 # Ledgerdemain
 
-**Ledgerdemain** integrates **Harvest** (invoices & payments), **Gusto** (payroll & tax breakdowns), **Capital One** (credit card CSV/PDF/OFX statements), and **Grasshopper Bank** (Read-Only API + CSV/OFX exports) with **Wave Accounting** (GraphQL API) through a local SQLite staging, reconciliation, review, and dry-run/live push pipeline.
+**Ledgerdemain** integrates **Harvest** (invoices & payments), **Gusto** (payroll & tax breakdowns), **Capital One** (credit card CSV/PDF/OFX statements), and **Grasshopper Bank** (Read-Only API + OFX/QFX/QBO exports) with **Wave Accounting** (GraphQL API) through a local SQLite staging, reconciliation, review, and dry-run/live push pipeline.
 
 ## Why a Local Staging & Reconciliation Ledger?
 
@@ -74,10 +74,10 @@ uv run --extra dev pytest -v
 - Set `HARVEST_ACCOUNT_ID` and `HARVEST_ACCESS_TOKEN` in `.env`, plus `harvest.user_agent` with your app name and contact email.
 - Alternatively, drop exported Harvest invoice CSVs into `inbox/harvest/` or pass `--file`.
 
-### 3. Grasshopper Bank (Multi-Account Read-Only API or OFX/CSV)
+### 3. Grasshopper Bank (Multi-Account Read-Only API or OFX)
 - In Grasshopper online banking, go to **Settings -> API Banking**, accept the terms, **whitelist your static IP address**, and save both the Bearer Token (`GRASSHOPPER_ACCESS_TOKEN`) and Header Secret (`GRASSHOPPER_HEADER_SECRET`) in `.env`.
 - Run `uv run ledgerdemain grasshopper list-accounts` to retrieve the `id` and `last4` for both your **Savings** and **Money Market** accounts, then map them under `[[grasshopper.accounts]]` in `ledgerdemain.toml` (`grasshopper_savings`, `grasshopper_money_market`).
-- Or export OFX/CSV/QBO statements to `inbox/grasshopper/`; OFX exports automatically match each account via `<BANKACCTFROM>/<ACCTID>`, and internal Savings <-> Money Market transfers reconcile automatically.
+- Or export OFX/QFX/QBO statements to `inbox/grasshopper/`; OFX exports automatically match each account via `<BANKACCTFROM>/<ACCTID>`, and internal Savings <-> Money Market transfers reconcile automatically.
 
 ### 4. Capital One Credit Card (OFX / CSV / PDF)
 - **Recommended:** Export **OFX (OFX 2.x XML / Quicken / QFX / QBO)** from Capital One and place it in `inbox/capital_one/` (or pass `--file`). Capital One OFX exports include unique `<FITID>` IDs for duplicate-safe overlapping downloads, both transaction date (`<DTUSER>`) and posted date (`<DTPOSTED>`), card last-4 (`<ACCTID>`), and statement `<LEDGERBAL>`.

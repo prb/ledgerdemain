@@ -12,7 +12,7 @@ from typing import Any
 
 from ledgerdemain.adapters.base import sha256_file
 from ledgerdemain.adapters.capital_one import CapitalOneCsvAdapter, CapitalOnePdfAdapter
-from ledgerdemain.adapters.grasshopper import GrasshopperApiAdapter, GrasshopperCsvAdapter
+from ledgerdemain.adapters.grasshopper import GrasshopperApiAdapter
 from ledgerdemain.adapters.gusto import GustoPayrollCsvAdapter
 from ledgerdemain.adapters.harvest import HarvestApiAdapter, HarvestCsvAdapter
 from ledgerdemain.adapters.ofx import OfxStatement, OfxTransactionParser
@@ -361,16 +361,16 @@ def _ingest_grasshopper_file(
                 )
             )
         txs = stmt.transactions
-        kind = "ofx"
         _print_ofx_summary(path, stmt, account_key=acct_key)
     else:
-        acct_key = account_key_override or cfg.grasshopper.resolve_account_key(filename=path.name)
-        txs = GrasshopperCsvAdapter().parse_file(path, account_key=acct_key)
-        kind = "csv"
+        raise ValueError(
+            f"Unsupported Grasshopper file type {path.suffix!r} ({path.name}); "
+            "use an OFX, QFX, or QBO export."
+        )
     return db.ingest_bank_transactions_batch(
         txs,
         source="grasshopper",
-        input_kind=kind,
+        input_kind="ofx",
         file_path=str(path),
         file_sha256=sha256_file(path),
     )
@@ -556,9 +556,7 @@ def _cmd_ingest(args: argparse.Namespace) -> int:
                 )
                 print(f"Grasshopper API: read {r}, inserted {ins} new transaction(s).")
             else:
-                files = _inbox_files(
-                    cfg.general.inbox_dir, "grasshopper", (".csv", ".ofx", ".qfx", ".qbo")
-                )
+                files = _inbox_files(cfg.general.inbox_dir, "grasshopper", (".ofx", ".qfx", ".qbo"))
                 succeeded, total_r, total_i = _ingest_inbox_files(
                     "Grasshopper",
                     files,
@@ -636,9 +634,7 @@ def _cmd_ingest(args: argparse.Namespace) -> int:
                 _run_api_step("Grasshopper API", _grasshopper_api_step, api_failures)
             _ingest_inbox_files(
                 "Grasshopper",
-                _inbox_files(
-                    cfg.general.inbox_dir, "grasshopper", (".csv", ".ofx", ".qfx", ".qbo")
-                ),
+                _inbox_files(cfg.general.inbox_dir, "grasshopper", (".ofx", ".qfx", ".qbo")),
                 lambda f: _ingest_grasshopper_file(db, cfg, f),
                 failures,
                 per_file_prefix="Grasshopper file",
@@ -951,10 +947,10 @@ def build_parser() -> argparse.ArgumentParser:
     p_ing_harv.set_defaults(func=_cmd_ingest)
 
     p_ing_gh = ingest_sub.add_parser(
-        "grasshopper", help="Ingest Grasshopper transactions via API or CSV/OFX"
+        "grasshopper", help="Ingest Grasshopper transactions via API or OFX/QFX/QBO"
     )
     p_ing_gh.add_argument("--api", action="store_true", help="Force Grasshopper API sync")
-    p_ing_gh.add_argument("--file", help="Path to Grasshopper CSV/OFX/QBO export")
+    p_ing_gh.add_argument("--file", help="Path to Grasshopper OFX/QFX/QBO export")
     p_ing_gh.add_argument("--inbox", action="store_true", help="Scan inbox/grasshopper/")
     p_ing_gh.add_argument(
         "--account-key",

@@ -233,18 +233,6 @@ SAMPLE_CAPITAL_ONE_PDF_LINES = [
     "Total Transactions $365.00",
 ]
 
-SAMPLE_GRASSHOPPER_CSV = """Grasshopper Business Checking - Activity Export
-Account: Operating **9012
-
-Posted Date,Transaction Date,Description,Debit,Credit,Category
-2026-01-05,2026-01-05,ACH DEPOSIT ACME CORP INV-1001,,3000.00,Deposit
-2026-01-09,2026-01-09,GUSTO FEE MONTHLY SUBSCRIPTION,45.00,,Software
-2026-01-10,2026-01-10,GUSTO PAY 260110,3705.75,,Payroll
-2026-01-10,2026-01-10,GUSTO TAX 260110,1315.50,,Payroll Tax
-2026-01-12,2026-01-12,CAPITAL ONE AUTOPAY ACH,500.00,,Transfer
-2026-01-15,2026-01-15,STRIPE TRANSFER WIDGET LABS,,1940.00,Deposit
-"""
-
 SAMPLE_HARVEST_CSV = (
     "\n".join(
         [
@@ -734,7 +722,7 @@ def build_ofx_xml(section: str, acct_from: str, acct_id: str, entries: list[OfxE
 """
 
 
-# The e2e workflow data below mirrors SAMPLE_GRASSHOPPER_CSV, SAMPLE_CAPITAL_ONE_CSV and
+# The e2e workflow data below mirrors the former Grasshopper CSV sample, SAMPLE_CAPITAL_ONE_CSV and
 # SAMPLE_CAPITAL_ONE_PDF_LINES (same dates, descriptions, amounts, directions and card last-4),
 # expressed as OFX so the e2e test does not depend on the CSV/PDF adapters. The CSV and PDF
 # merchant categories are dropped because OFX does not carry them.

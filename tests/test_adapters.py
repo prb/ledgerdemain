@@ -18,7 +18,6 @@ from ledgerdemain.adapters.base import normalize_description
 from ledgerdemain.adapters.capital_one import CapitalOneCsvAdapter, CapitalOnePdfAdapter
 from ledgerdemain.adapters.grasshopper import (
     GrasshopperApiAdapter,
-    GrasshopperCsvAdapter,
     GrasshopperParseError,
 )
 from ledgerdemain.adapters.gusto import GustoParseError, GustoPayrollCsvAdapter
@@ -37,7 +36,6 @@ from tests.fixtures import (
     SAMPLE_CAPITAL_ONE_CSV,
     SAMPLE_CAPITAL_ONE_OFX_XML,
     SAMPLE_CAPITAL_ONE_PDF_LINES,
-    SAMPLE_GRASSHOPPER_CSV,
     SAMPLE_GUSTO_CONTRACTOR_CSV,
     SAMPLE_GUSTO_PAYROLL_CSV,
     SAMPLE_HARVEST_CSV,
@@ -156,7 +154,7 @@ def test_harvest_csv_adapter(tmp_path: Path) -> None:
     assert invs[2].due_amount == Money.parse("1500.00")
 
 
-def test_grasshopper_api_and_csv_and_ofx(tmp_path: Path) -> None:
+def test_grasshopper_api_and_ofx(tmp_path: Path) -> None:
     def handler(method: str, url: str, headers: dict[str, str], body: bytes | None) -> HttpResponse:
         del method, body
         assert headers["X-API-Secret"] == "sec-123"
@@ -200,13 +198,6 @@ def test_grasshopper_api_and_csv_and_ofx(tmp_path: Path) -> None:
     assert txs[0].direction == "DEPOSIT"
     assert txs[1].direction == "WITHDRAWAL"
     assert txs[1].amount == Money.parse("2000.50")
-
-    csv_path = tmp_path / "gh.csv"
-    csv_path.write_text(SAMPLE_GRASSHOPPER_CSV, encoding="utf-8")
-    csv_txs = GrasshopperCsvAdapter().parse_file(csv_path)
-    assert len(csv_txs) == 6
-    assert csv_txs[0].direction == "DEPOSIT"
-    assert csv_txs[1].direction == "WITHDRAWAL"
 
     ofx_path = tmp_path / "gh.ofx"
     ofx_path.write_text(SAMPLE_OFX_SGML, encoding="utf-8")

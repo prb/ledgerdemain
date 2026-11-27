@@ -1,17 +1,14 @@
-"""Grasshopper Bank Read-Only API and CSV/OFX adapters."""
+"""Grasshopper Bank Read-Only API adapter."""
 
 from __future__ import annotations
 
-import csv
 import math
 import re
 from collections import defaultdict
-from pathlib import Path
 from typing import Any
 from urllib.parse import urljoin
 
 from ledgerdemain.adapters.base import normalize_description, parse_flexible_date
-from ledgerdemain.adapters.ofx import OfxTransactionParser
 from ledgerdemain.config import ConfigError, GrasshopperConfig
 from ledgerdemain.db import make_bank_fingerprint
 from ledgerdemain.http_client import HttpClient
@@ -335,140 +332,3 @@ class GrasshopperApiAdapter:
             status=str(item.get("status") or "posted").lower(),
             raw=dict(item),
         )
-
-
-class GrasshopperCsvAdapter:
-    """Parse Grasshopper Bank CSV or OFX/QBO exports."""
-
-    source_name = "grasshopper"
-
-    def parse_file(
-        self, path: Path, *, account_key: str = "grasshopper_checking"
-    ) -> list[BankTransaction]:
-        """Parse a Grasshopper CSV, OFX, QFX, or QBO export into BankTransactions."""
-        if path.suffix.lower() in {".ofx", ".qfx", ".qbo"}:
-            return OfxTransactionParser().parse_file(
-                path, source="grasshopper", account_key=account_key
-            )
-
-        with path.open("r", encoding="utf-8-sig", newline="") as fh:
-            rows = list(csv.reader(fh))
-
-        header_idx = self._find_header_row(rows)
-        if header_idx is None:
-            return []
-
-        headers = [h.strip().lower() for h in rows[header_idx]]
-        seen_counts: dict[tuple[str, str, str, str], int] = defaultdict(int)
-        transactions: list[BankTransaction] = []
-
-        for raw_row in rows[header_idx + 1 :]:
-            if not any(cell.strip() for cell in raw_row):
-                continue
-            row = {
-                headers[i]: raw_row[i].strip() if i < len(raw_row) else ""
-                for i in range(len(headers))
-                if headers[i]
-            }
-
-            date_val = (
-                row.get("posted date")
-                or row.get("posting date")
-                or row.get("date")
-                or row.get("transaction date")
-                or ""
-            )
-            if not date_val:
-                continue
-            posted_date = parse_flexible_date(date_val)
-            tx_date_val = row.get("transaction date") or date_val
-            tx_date = parse_flexible_date(tx_date_val)
-
-            desc = (
-                row.get("description")
-                or row.get("memo")
-                or row.get("payee")
-                or row.get("details")
-                or "Grasshopper Transaction"
-            )
-            norm_desc = normalize_description(desc)
-
-            direction_and_amount = self._parse_amount_and_direction(row)
-            if direction_and_amount is None:
-                continue
-            direction, amount = direction_and_amount
-
-            ext_id = (
-                row.get("transaction id") or row.get("id") or row.get("reference") or ""
-            ).strip() or None
-            occ_key = (posted_date, direction, str(amount), norm_desc)
-            occ_idx = seen_counts[occ_key]
-            seen_counts[occ_key] += 1
-
-            fingerprint = make_bank_fingerprint(
-                source="grasshopper",
-                account_key=account_key,
-                external_id=ext_id,
-                posted_date=posted_date,
-                direction=direction,
-                amount=amount,
-                normalized_description=norm_desc,
-                occurrence_index=occ_idx,
-            )
-
-            transactions.append(
-                BankTransaction(
-                    source="grasshopper",
-                    account_key=account_key,
-                    external_id=ext_id,
-                    fingerprint=fingerprint,
-                    tx_date=tx_date,
-                    posted_date=posted_date,
-                    description=desc,
-                    normalized_description=norm_desc,
-                    amount=amount,
-                    direction=direction,
-                    source_category=row.get("category") or row.get("type") or "",
-                    status=(row.get("status") or "posted").lower(),
-                    raw=dict(row),
-                )
-            )
-
-        return transactions
-
-    @staticmethod
-    def _find_header_row(rows: list[list[str]]) -> int | None:
-        for idx, row in enumerate(rows[:20]):
-            lowered = {cell.strip().lower() for cell in row if cell.strip()}
-            has_date = any("date" in col for col in lowered)
-            has_amt = any(k in col for col in lowered for k in ("amount", "debit", "credit"))
-            if has_date and has_amt:
-                return idx
-        return None
-
-    @staticmethod
-    def _parse_amount_and_direction(row: dict[str, str]) -> tuple[str, Money] | None:
-        debit_raw = row.get("debit") or row.get("withdrawal") or ""
-        credit_raw = row.get("credit") or row.get("deposit") or ""
-        if debit_raw or credit_raw:
-            debit_amt = abs(parse_money(debit_raw, ZERO)) if debit_raw else ZERO
-            credit_amt = abs(parse_money(credit_raw, ZERO)) if credit_raw else ZERO
-            if debit_amt > ZERO:
-                return "WITHDRAWAL", debit_amt
-            if credit_amt > ZERO:
-                return "DEPOSIT", credit_amt
-            return None
-
-        amt_raw = row.get("amount") or ""
-        if not amt_raw:
-            return None
-        signed = parse_money(amt_raw, ZERO)
-        if signed == ZERO:
-            return None
-
-        type_raw = (row.get("type") or row.get("direction") or "").strip().upper()
-        if type_raw in {"DEBIT", "WITHDRAWAL", "DR"}:
-            return "WITHDRAWAL", abs(signed)
-        if type_raw in {"CREDIT", "DEPOSIT", "CR"}:
-            return "DEPOSIT", abs(signed)
-        return ("WITHDRAWAL" if signed < ZERO else "DEPOSIT"), abs(signed)

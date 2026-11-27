@@ -10,7 +10,7 @@ from ledgerdemain.adapters.base import (
     sha256_file,
 )
 from ledgerdemain.adapters.capital_one import CapitalOneCsvAdapter, CapitalOnePdfAdapter
-from ledgerdemain.adapters.grasshopper import GrasshopperApiAdapter, GrasshopperCsvAdapter
+from ledgerdemain.adapters.grasshopper import GrasshopperApiAdapter
 from ledgerdemain.adapters.gusto import GustoPayrollCsvAdapter
 from ledgerdemain.adapters.harvest import HarvestApiAdapter, HarvestCsvAdapter
 from ledgerdemain.adapters.ofx import OfxParseError, OfxStatement, OfxTransactionParser
@@ -20,7 +20,6 @@ __all__ = [
     "CapitalOneCsvAdapter",
     "CapitalOnePdfAdapter",
     "GrasshopperApiAdapter",
-    "GrasshopperCsvAdapter",
     "GustoPayrollCsvAdapter",
     "HarvestApiAdapter",
     "HarvestCsvAdapter",

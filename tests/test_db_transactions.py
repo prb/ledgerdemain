@@ -25,8 +25,8 @@ from ledgerdemain.models import (
 )
 from ledgerdemain.money import Money
 from tests.fixtures import (
+    E2E_GRASSHOPPER_OFX,
     SAMPLE_CAPITAL_ONE_OFX_XML,
-    SAMPLE_GRASSHOPPER_CSV,
     SAMPLE_GUSTO_PAYROLL_CSV,
     SAMPLE_HARVEST_CSV,
     make_test_config,
@@ -76,8 +76,8 @@ def _install_abort_trigger(
 
 def test_failed_bank_file_ingest_rolls_back_batch_row(tmp_path: Path) -> None:
     cfg = make_test_config(tmp_path, include_api_creds=False)
-    gh_csv = tmp_path / "grasshopper.csv"
-    gh_csv.write_text(SAMPLE_GRASSHOPPER_CSV, encoding="utf-8")
+    gh_ofx = tmp_path / "grasshopper.ofx"
+    gh_ofx.write_text(E2E_GRASSHOPPER_OFX, encoding="utf-8")
     co_ofx = tmp_path / "capital_one.ofx"
     co_ofx.write_text(SAMPLE_CAPITAL_ONE_OFX_XML, encoding="utf-8")
 
@@ -92,7 +92,7 @@ def test_failed_bank_file_ingest_rolls_back_batch_row(tmp_path: Path) -> None:
         )
 
         with pytest.raises(sqlite3.IntegrityError, match="simulated write failure"):
-            _ingest_grasshopper_file(db, cfg, gh_csv)
+            _ingest_grasshopper_file(db, cfg, gh_ofx)
         assert _count(db, "bank_transactions") == 0
         assert _count(db, "ingestion_batches") == 0
 
@@ -106,14 +106,14 @@ def test_failed_batch_count_update_rolls_back_transactions_and_preserves_prior_d
     tmp_path: Path,
 ) -> None:
     cfg = make_test_config(tmp_path, include_api_creds=False)
-    gh_csv = tmp_path / "grasshopper.csv"
-    gh_csv.write_text(SAMPLE_GRASSHOPPER_CSV, encoding="utf-8")
+    gh_ofx = tmp_path / "grasshopper.ofx"
+    gh_ofx.write_text(E2E_GRASSHOPPER_OFX, encoding="utf-8")
     co_ofx = tmp_path / "capital_one.ofx"
     co_ofx.write_text(SAMPLE_CAPITAL_ONE_OFX_XML, encoding="utf-8")
 
     with LedgerDB(cfg.general.db_path) as db:
         db.init_schema()
-        read_cnt, ins_cnt = _ingest_grasshopper_file(db, cfg, gh_csv)
+        read_cnt, ins_cnt = _ingest_grasshopper_file(db, cfg, gh_ofx)
         assert read_cnt == 6
         assert ins_cnt == 6
         assert _count(db, "bank_transactions") == 6
@@ -371,3 +371,18 @@ def test_nested_transaction_rolls_back_all_composed_writes_on_inner_failure(tmp_
         # Connection remains usable and commits subsequent valid writes cleanly
         db.upsert_wave_accounts([checking])
         assert _count(db, "wave_accounts") == 1
+
+
+def test_grasshopper_file_ingest_rejects_csv(tmp_path: Path) -> None:
+    cfg = make_test_config(tmp_path, include_api_creds=False)
+    gh_csv = tmp_path / "grasshopper.csv"
+    gh_csv.write_text(
+        "Posted Date,Description,Debit,Credit\n2026-01-05,X,,1.00\n", encoding="utf-8"
+    )
+
+    with LedgerDB(cfg.general.db_path) as db:
+        db.init_schema()
+        with pytest.raises(ValueError, match="Unsupported Grasshopper file type"):
+            _ingest_grasshopper_file(db, cfg, gh_csv)
+        assert _count(db, "bank_transactions") == 0
+        assert _count(db, "ingestion_batches") == 0

@@ -4,3 +4,4 @@
 @[python-code-conventions](.kiro/steering/python-code-conventions.md)
 @[financial-modeling](.kiro/steering/financial-modeling.md)
 @[data-ingestion](.kiro/steering/data-ingestion.md)
+@[less-is-more](.kiro/steering/less-is-more.md)

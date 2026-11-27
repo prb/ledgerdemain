@@ -407,11 +407,28 @@ def _ingest_gusto_file(db: LedgerDB, cfg: AppConfig, path: Path, run_type: str) 
     )
 
 
-def _inbox_files(inbox_dir: Path, subdir: str, extensions: tuple[str, ...]) -> list[Path]:
+def _ingest_gusto_inbox_file(
+    db: LedgerDB, cfg: AppConfig, path: Path, run_type: str
+) -> tuple[int, int]:
+    if path.suffix.lower() != ".csv":
+        raise ValueError(f"Unsupported Gusto file type {path.suffix!r}; use a CSV export.")
+    return _ingest_gusto_file(db, cfg, path, run_type)
+
+
+def _reject_harvest_inbox_file(path: Path) -> tuple[int, int]:
+    raise ValueError(f"Harvest is ingested through the API; remove or move the file ({path.name}).")
+
+
+def _inbox_files(inbox_dir: Path, subdir: str) -> list[Path]:
+    """List candidate files in an inbox folder, leaving the supported-type check to the ingester.
+
+    Dotfiles (such as ``.DS_Store``) and subdirectories are ignored by name. Every other file is
+    returned so that an unsupported one is reported as a failure instead of silently skipped.
+    """
     folder = inbox_dir / subdir
     if not folder.exists():
         return []
-    return sorted(p for p in folder.iterdir() if p.is_file() and p.suffix.lower() in extensions)
+    return sorted(p for p in folder.iterdir() if p.is_file() and not p.name.startswith("."))
 
 
 def _cmd_wave_list_businesses(args: argparse.Namespace) -> int:
@@ -533,7 +550,7 @@ def _cmd_ingest(args: argparse.Namespace) -> int:
                 )
                 print(f"Grasshopper API: read {r}, inserted {ins} new transaction(s).")
             else:
-                files = _inbox_files(cfg.general.inbox_dir, "grasshopper", (".ofx", ".qfx", ".qbo"))
+                files = _inbox_files(cfg.general.inbox_dir, "grasshopper")
                 succeeded, total_r, total_i = _ingest_inbox_files(
                     "Grasshopper",
                     files,
@@ -553,11 +570,7 @@ def _cmd_ingest(args: argparse.Namespace) -> int:
                     db, Path(args.file), expected_currency=cfg.general.currency
                 )
             else:
-                files = _inbox_files(
-                    cfg.general.inbox_dir,
-                    "capital_one",
-                    (".ofx", ".qfx", ".qbo"),
-                )
+                files = _inbox_files(cfg.general.inbox_dir, "capital_one")
                 succeeded, total_r, total_i = _ingest_inbox_files(
                     "Capital One",
                     files,
@@ -577,8 +590,8 @@ def _cmd_ingest(args: argparse.Namespace) -> int:
             else:
                 succeeded, total_r, total_i = _ingest_inbox_files(
                     "Gusto",
-                    _inbox_files(cfg.general.inbox_dir, "gusto", (".csv",)),
-                    lambda f: _ingest_gusto_file(db, cfg, f, args.run_type),
+                    _inbox_files(cfg.general.inbox_dir, "gusto"),
+                    lambda f: _ingest_gusto_inbox_file(db, cfg, f, args.run_type),
                     failures,
                 )
                 print(
@@ -608,7 +621,7 @@ def _cmd_ingest(args: argparse.Namespace) -> int:
                 _run_api_step("Grasshopper API", _grasshopper_api_step, api_failures)
             _ingest_inbox_files(
                 "Grasshopper",
-                _inbox_files(cfg.general.inbox_dir, "grasshopper", (".ofx", ".qfx", ".qbo")),
+                _inbox_files(cfg.general.inbox_dir, "grasshopper"),
                 lambda f: _ingest_grasshopper_file(db, cfg, f),
                 failures,
                 per_file_prefix="Grasshopper file",
@@ -616,11 +629,7 @@ def _cmd_ingest(args: argparse.Namespace) -> int:
 
             _ingest_inbox_files(
                 "Capital One",
-                _inbox_files(
-                    cfg.general.inbox_dir,
-                    "capital_one",
-                    (".ofx", ".qfx", ".qbo"),
-                ),
+                _inbox_files(cfg.general.inbox_dir, "capital_one"),
                 lambda f: _ingest_capital_one_file(db, f, expected_currency=cfg.general.currency),
                 failures,
                 per_file_prefix="Capital One",
@@ -628,11 +637,18 @@ def _cmd_ingest(args: argparse.Namespace) -> int:
 
             _ingest_inbox_files(
                 "Gusto",
-                _inbox_files(cfg.general.inbox_dir, "gusto", (".csv",)),
-                lambda f: _ingest_gusto_file(db, cfg, f, "regular"),
+                _inbox_files(cfg.general.inbox_dir, "gusto"),
+                lambda f: _ingest_gusto_inbox_file(db, cfg, f, "regular"),
                 failures,
                 per_file_prefix="Gusto",
                 per_file_suffix=" run(s)",
+            )
+
+            _ingest_inbox_files(
+                "Harvest",
+                _inbox_files(cfg.general.inbox_dir, "harvest"),
+                _reject_harvest_inbox_file,
+                failures,
             )
     if failures:
         names = ", ".join(path.name for path, _ in failures)

@@ -77,7 +77,7 @@ uv run --extra dev pytest -v
 
 ### 4. Capital One Credit Card (OFX)
 - Export **OFX (OFX 2.x XML / Quicken / QFX / QBO)** from Capital One and place it in `inbox/capital_one/` (or pass `--file`). Capital One OFX exports include unique `<FITID>` IDs for duplicate-safe overlapping downloads, both transaction date (`<DTUSER>`) and posted date (`<DTPOSTED>`), card last-4 (`<ACCTID>`), and statement `<LEDGERBAL>`.
-- Only OFX/QFX/QBO is supported; `ingest capital-one --file` rejects other file types, and inbox runs ignore them.
+- Only OFX/QFX/QBO is supported; `ingest capital-one --file` rejects other file types, and inbox runs report them as failed files (exit 2) and still ingest the supported files.
 
 ### 5. Gusto Payroll (Payroll Journal & Contractor CSVs)
 - Gusto restricts direct OAuth API access to approved multi-company SaaS partners, so single-company owners export **Payroll Journal** and **Contractor Payment** CSVs from **Reports** and drop them into `inbox/gusto/`.

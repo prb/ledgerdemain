@@ -1875,12 +1875,91 @@ def test_cli_capital_one_rejects_csv_and_pdf_files(tmp_path: Path) -> None:
     cfg = load_config(cfg_path)
     inbox = cfg.general.inbox_dir / "capital_one"
     inbox.mkdir(parents=True, exist_ok=True)
-    (inbox / "ignored.csv").write_text("x", encoding="utf-8")
-    (inbox / "ignored.pdf").write_text("x", encoding="utf-8")
+    (inbox / "unsupported.csv").write_text("x", encoding="utf-8")
+    (inbox / "unsupported.pdf").write_text("x", encoding="utf-8")
     code, out, err = _run_cli_main(cfg_path, ["ingest", "capital-one"])
-    assert code == 0
+    assert code == 2
     assert "Capital One: 0 file(s)" in out
+    assert "Error ingesting Capital One (unsupported.csv): Unsupported Capital One file type" in err
+    assert "Error ingesting Capital One (unsupported.pdf): Unsupported Capital One file type" in err
+    assert "Ingest completed with 2 failed file(s): unsupported.csv, unsupported.pdf" in err
+
+
+_INBOX_SAMPLES: dict[str, tuple[str, str, str, str]] = {
+    # inbox folder -> (ingest argv target, valid file name, valid content, "Unsupported" label)
+    "grasshopper": ("grasshopper", "valid.ofx", SAMPLE_OFX_SGML, "Grasshopper"),
+    "capital_one": ("capital-one", "valid.ofx", SAMPLE_CAPITAL_ONE_OFX_XML, "Capital One"),
+    "gusto": ("gusto", "valid.csv", SAMPLE_GUSTO_PAYROLL_CSV, "Gusto"),
+}
+
+
+@pytest.mark.parametrize("folder", list(_INBOX_SAMPLES))
+@pytest.mark.parametrize("command", ["source", "all"])
+def test_cli_inbox_reports_unsupported_file_and_ingests_supported(
+    tmp_path: Path, folder: str, command: str
+) -> None:
+    target, valid_name, valid_text, label = _INBOX_SAMPLES[folder]
+    cfg_path = write_test_workspace_config(tmp_path, include_api_creds=False)
+    inbox = load_config(cfg_path).general.inbox_dir / folder
+    inbox.mkdir(parents=True, exist_ok=True)
+    (inbox / valid_name).write_text(valid_text, encoding="utf-8")
+    (inbox / "statement.pdf").write_text("x", encoding="utf-8")
+
+    argv = ["ingest", "all"] if command == "all" else ["ingest", target]
+    code, _, err = _run_cli_main(cfg_path, argv)
+
+    assert code == 2
+    assert f"Error ingesting {label} (statement.pdf): Unsupported {label} file type '.pdf'" in err
+    assert "Ingest completed with 1 failed file(s): statement.pdf" in err
+    assert valid_name not in err
+    with LedgerDB(tmp_path / "data/ledgerdemain.db") as db:
+        if folder == "gusto":
+            assert len(db.list_gusto_payroll_runs()) == 1
+        else:
+            assert len(db.list_bank_transactions(source=folder)) == 2
+
+
+@pytest.mark.parametrize("command", ["grasshopper", "capital-one", "gusto", "all"])
+def test_cli_inbox_ignores_dotfiles_and_subdirectories(tmp_path: Path, command: str) -> None:
+    cfg_path = write_test_workspace_config(tmp_path, include_api_creds=False)
+    root = load_config(cfg_path).general.inbox_dir
+    for folder in ("grasshopper", "capital_one", "gusto", "harvest"):
+        (root / folder / "archive").mkdir(parents=True, exist_ok=True)
+        (root / folder / ".DS_Store").write_bytes(b"\x00")
+        (root / folder / "archive" / "old.pdf").write_text("x", encoding="utf-8")
+
+    code, _, err = _run_cli_main(cfg_path, ["ingest", command])
+
+    assert code == 0
     assert err == ""
+
+
+def test_cli_ingest_all_reports_leftover_harvest_inbox_files(tmp_path: Path) -> None:
+    cfg_path = write_test_workspace_config(tmp_path, include_api_creds=False)
+    inbox = load_config(cfg_path).general.inbox_dir / "harvest"
+    inbox.mkdir(parents=True, exist_ok=True)
+    (inbox / "invoices.csv").write_text("x", encoding="utf-8")
+    (inbox / ".DS_Store").write_bytes(b"\x00")
+
+    code, _, err = _run_cli_main(cfg_path, ["ingest", "all"])
+
+    assert code == 2
+    assert "Error ingesting Harvest (invoices.csv): Harvest is ingested through the API" in err
+    assert "Ingest completed with 1 failed file(s): invoices.csv" in err
+
+
+def test_cli_gusto_file_rejects_non_csv_with_clear_error(tmp_path: Path) -> None:
+    cfg_path = write_test_workspace_config(tmp_path, include_api_creds=False)
+    not_csv = tmp_path / "payroll.xlsx"
+    not_csv.write_bytes(b"PK\x03\x04 not a csv")
+
+    code, _, err = _run_cli_main(cfg_path, ["ingest", "gusto", "--file", str(not_csv)])
+
+    assert code == 2
+    assert "Unsupported Gusto file type '.xlsx' (payroll.xlsx); use a CSV export." in err
+    assert "Ingest completed" not in err
+    with LedgerDB(tmp_path / "data/ledgerdemain.db") as db:
+        assert db.list_gusto_payroll_runs() == []
 
 
 def _empty_body_client() -> HttpClient:

@@ -38,6 +38,16 @@ description_regex = "(?i)hsa\\s*con\\s*t\\s*ribution"
 account_key = "officer_hsa"
 notes = "S-Corp officer/shareholder HSA contribution"
 
+# Optional Solo 401(k) employer profit-sharing rule — enable and adjust regex to match your bank export:
+# [[rules]]
+# name = "Solo 401(k) Employer Profit Sharing"
+# priority = 19
+# source = "grasshopper"
+# direction = "WITHDRAWAL"
+# description_regex = "(?i)(fidelity.*401k|solo\\s*401k|profit\\s*sharing)"
+# account_key = "solo_401k_profit_sharing"
+# notes = "S-Corp employer profit-sharing contribution to Solo 401(k)"
+
 [[rules]]
 name = "Cloud Hosting Vendors"
 priority = 20

@@ -85,6 +85,7 @@ payroll_employer_taxes = "Payroll - Employer Taxes"
 payroll_employer_benefits = "Payroll - Employer Benefits"
 officer_health_insurance = "Officer / Shareholder Health Insurance"
 officer_hsa = "Officer / Shareholder HSA"
+solo_401k_profit_sharing = "Solo 401(k) Employer Profit Sharing"
 payroll_taxes_payable = "Payroll Taxes Payable"
 payroll_benefits_payable = "Payroll Benefits Payable"
 payroll_processing_fees = "Payroll Processing Fees"
@@ -118,3 +119,14 @@ bank_interest = ["(?i)\\binterest\\b"]
 # Optional custom CSV column header overrides, e.g.:
 # check_date = "Pay Date"
 # gross_wages = "Total Gross Earnings"
+
+[retirement]
+# Solo 401(k) employer profit-sharing settings (defaults match 2026 IRS Notice 2025-67).
+#   - "w2_box5": Medicare / cash W-2 wages excluding >2% S-Corp imputed benefits (Fidelity default)
+#   - "w2_box1": Total W-2 Box 1 wages including >2% S-Corp imputed COBRA/HSA benefits
+compensation_basis = "w2_box5"
+annual_additions_limit = "72000.00"
+compensation_cap = "360000.00"
+profit_sharing_account_key = "solo_401k_profit_sharing"
+employer_rate_numerator = 1
+employer_rate_denominator = 4

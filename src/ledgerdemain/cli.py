@@ -19,10 +19,11 @@ from ledgerdemain.adapters.ofx import OfxStatement, OfxTransactionParser
 from ledgerdemain.categorize import Categorizer
 from ledgerdemain.config import AppConfig, ConfigError, load_config, load_rules
 from ledgerdemain.db import LedgerDB
-from ledgerdemain.money import format_money
+from ledgerdemain.money import format_money, parse_money
 from ledgerdemain.planner import Planner, validate_double_entry_balance
 from ledgerdemain.reconcile import Reconciler
 from ledgerdemain.report import build_report, format_report_text
+from ledgerdemain.retirement import build_solo401k_summary, format_solo401k_text
 from ledgerdemain.wave.client import WaveGraphQLClient
 from ledgerdemain.wave.sync import WaveSyncService
 
@@ -85,6 +86,7 @@ payroll_employer_taxes = "Payroll - Employer Taxes"
 payroll_employer_benefits = "Payroll - Employer Benefits"
 officer_health_insurance = "Officer / Shareholder Health Insurance"
 officer_hsa = "Officer / Shareholder HSA"
+solo_401k_profit_sharing = "Solo 401(k) Employer Profit Sharing"
 payroll_taxes_payable = "Payroll Taxes Payable"
 payroll_benefits_payable = "Payroll Benefits Payable"
 payroll_processing_fees = "Payroll Processing Fees"
@@ -109,6 +111,14 @@ capital_one_payment = [
   "(?i)^autopay\\\\b",
 ]
 bank_interest = ["(?i)\\\\binterest\\\\b"]
+
+[retirement]
+compensation_basis = "w2_box5"
+annual_additions_limit = "72000.00"
+compensation_cap = "360000.00"
+profit_sharing_account_key = "solo_401k_profit_sharing"
+employer_rate_numerator = 1
+employer_rate_denominator = 4
 """
 
 _DEFAULT_RULES_FALLBACK = """[[rules]]
@@ -773,6 +783,23 @@ def _cmd_report(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_solo401k(args: argparse.Namespace) -> int:
+    cfg, db = _open_context(Path(args.config))
+    override = parse_money(args.employee_deferrals) if args.employee_deferrals is not None else None
+    with db:
+        summary = build_solo401k_summary(
+            db,
+            cfg,
+            year=args.year,
+            employee_deferrals_override=override,
+        )
+    if args.format == "json":
+        print(json.dumps(summary, indent=2))
+    else:
+        print(format_solo401k_text(summary))
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     """Construct the CLI argument parser."""
     parser = argparse.ArgumentParser(
@@ -946,6 +973,19 @@ def build_parser() -> argparse.ArgumentParser:
     p_rep.add_argument("--period", help="Optional YYYY-MM prefix filter")
     p_rep.add_argument("--format", choices=["text", "json"], default="text")
     p_rep.set_defaults(func=_cmd_report)
+
+    # solo401k
+    p_401k = subparsers.add_parser(
+        "solo401k",
+        help="Compute YTD Solo 401(k) employer profit-sharing allowance and remaining room",
+    )
+    p_401k.add_argument("--year", type=int, help="Tax year (defaults to latest payroll year)")
+    p_401k.add_argument(
+        "--employee-deferrals",
+        help="Override non-catch-up employee Solo 401(k) deferrals (USD)",
+    )
+    p_401k.add_argument("--format", choices=["text", "json"], default="text")
+    p_401k.set_defaults(func=_cmd_solo401k)
 
     return parser
 

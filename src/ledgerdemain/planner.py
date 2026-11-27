@@ -48,6 +48,7 @@ DEFAULT_NORMAL_BALANCE: dict[str, str] = {
     "payroll_employer_benefits": "DEBIT",
     "officer_health_insurance": "DEBIT",
     "officer_hsa": "DEBIT",
+    "solo_401k_profit_sharing": "DEBIT",
     "payroll_processing_fees": "DEBIT",
     "contractors_expense": "DEBIT",
     "software_subscriptions": "DEBIT",

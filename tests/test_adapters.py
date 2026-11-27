@@ -26,11 +26,12 @@ from ledgerdemain.categorize import Categorizer
 from ledgerdemain.cli import main
 from ledgerdemain.config import GrasshopperConfig, HarvestConfig, load_config
 from ledgerdemain.db import LedgerDB, make_bank_fingerprint
-from ledgerdemain.http_client import HttpClient, HttpError, HttpResponse
+from ledgerdemain.http_client import HttpClient, HttpError, HttpResponse, HttpTransport
 from ledgerdemain.models import BankTransaction, HarvestInvoiceLineItem
 from ledgerdemain.money import ZERO, Money
 from ledgerdemain.planner import Planner
 from ledgerdemain.reconcile import Reconciler
+from ledgerdemain.wave.client import WaveApiError
 from tests.fixtures import (
     SAMPLE_CAPITAL_ONE_OFX_XML,
     SAMPLE_GUSTO_CONTRACTOR_CSV,
@@ -1753,6 +1754,68 @@ def test_cli_ingest_all_records_malformed_api_payloads_and_continues(
         assert len(db.list_gusto_payroll_runs()) == 1
 
 
+def _patch_http_client(
+    monkeypatch: pytest.MonkeyPatch, module: str, transport: HttpTransport
+) -> None:
+    """Make ``module``'s HttpClient use ``transport`` with no retry sleeps."""
+    monkeypatch.setattr(
+        f"{module}.HttpClient",
+        lambda *_a, **_k: HttpClient(transport=transport, sleep_fn=lambda _: None),
+    )
+
+
+def test_cli_ingest_harvest_http_error_exits_2_without_traceback(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cfg_path = write_test_workspace_config(tmp_path, include_api_creds=True)
+    _patch_http_client(
+        monkeypatch,
+        "ledgerdemain.adapters.harvest",
+        RoutingMockTransport(lambda *_args: HttpResponse(401, {}, b"{}")),
+    )
+
+    code, _, err = _run_cli_main(cfg_path, ["ingest", "harvest"])
+
+    assert code == 2
+    assert "Error: HTTP 401" in err
+    assert "Traceback" not in err
+
+
+def test_cli_ingest_harvest_network_failure_exits_2_without_traceback(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cfg_path = write_test_workspace_config(tmp_path, include_api_creds=True)
+
+    def handler(*_args: object) -> HttpResponse:
+        raise TimeoutError("timed out")
+
+    _patch_http_client(monkeypatch, "ledgerdemain.adapters.harvest", RoutingMockTransport(handler))
+
+    code, _, err = _run_cli_main(cfg_path, ["ingest", "harvest"])
+
+    assert code == 2
+    assert "Error: HTTP 0: Network request failed" in err
+    assert "Traceback" not in err
+
+
+def test_cli_wave_list_businesses_graphql_error_exits_2_without_traceback(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cfg_path = write_test_workspace_config(tmp_path, include_api_creds=True)
+    body = json.dumps({"errors": [{"message": "Token revoked"}]}).encode("utf-8")
+    _patch_http_client(
+        monkeypatch,
+        "ledgerdemain.wave.client",
+        RoutingMockTransport(lambda *_args: HttpResponse(200, {}, body)),
+    )
+
+    code, _, err = _run_cli_main(cfg_path, ["wave", "list-businesses"])
+
+    assert code == 2
+    assert "Error: GraphQL error: Token revoked" in err
+    assert "Traceback" not in err
+
+
 def test_cli_capital_one_rejects_csv_and_pdf_files(tmp_path: Path) -> None:
     cfg_path = write_test_workspace_config(tmp_path, include_api_creds=False)
     for name in ("co.csv", "co.pdf"):
@@ -1930,3 +1993,23 @@ def test_grasshopper_api_accepts_zero_activity(
     fetch: Callable[[GrasshopperApiAdapter], list[object]], body: object
 ) -> None:
     assert fetch(_grasshopper_adapter(body)) == []
+
+
+def test_cli_push_wave_api_error_exits_2_without_traceback(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A rejected customer or product create escapes WaveSyncService.push as WaveApiError."""
+    cfg_path = write_test_workspace_config(tmp_path, include_api_creds=True)
+
+    def rejected(*_args: object, **_kwargs: object) -> object:
+        raise WaveApiError(
+            "customerCreate", [{"code": "INVALID", "path": ["input", "name"], "message": "bad"}]
+        )
+
+    monkeypatch.setattr("ledgerdemain.wave.sync.WaveSyncService.push", rejected)
+
+    code, _, err = _run_cli_main(cfg_path, ["push"])
+
+    assert code == 2
+    assert "Error: Wave customerCreate failed: [INVALID] input.name: bad" in err
+    assert "Traceback" not in err

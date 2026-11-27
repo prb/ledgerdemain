@@ -18,7 +18,7 @@ from ledgerdemain.adapters.ofx import OfxStatement, OfxTransactionParser
 from ledgerdemain.categorize import Categorizer
 from ledgerdemain.config import AppConfig, ConfigError, load_config, load_rules
 from ledgerdemain.db import LedgerDB
-from ledgerdemain.http_client import HttpError
+from ledgerdemain.http_client import GraphQLError, HttpError
 from ledgerdemain.money import format_money
 from ledgerdemain.planner import Planner, validate_double_entry_balance
 from ledgerdemain.reconcile import Reconciler
@@ -1051,6 +1051,6 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = parser.parse_args(argv)
     try:
         return int(args.func(args))
-    except (ConfigError, ValueError, KeyError) as exc:
+    except (ConfigError, ValueError, KeyError, HttpError, GraphQLError) as exc:
         print(f"Error: {exc}", file=sys.stderr)
         return 2

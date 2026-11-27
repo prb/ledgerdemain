@@ -400,6 +400,32 @@ def _ingest_gusto_file(db: LedgerDB, cfg: AppConfig, path: Path, run_type: str) 
     return read_cnt, ins_cnt
 
 
+def _ingest_gusto_inbox(
+    db: LedgerDB,
+    cfg: AppConfig,
+    run_type: str,
+    failures: list[tuple[Path, str]],
+    *,
+    per_file_stdout: bool = False,
+) -> tuple[int, int, int]:
+    """Ingest all Gusto CSV files from the inbox, recording per-file failures."""
+    files = _inbox_files(cfg.general.inbox_dir, "gusto", (".csv",))
+    succeeded = total_r = total_i = 0
+    for f in files:
+        try:
+            r, ins = _ingest_gusto_file(db, cfg, f, run_type)
+        except ValueError as exc:
+            print(f"Error ingesting Gusto ({f.name}): {exc}", file=sys.stderr)
+            failures.append((f, str(exc)))
+            continue
+        succeeded += 1
+        total_r += r
+        total_i += ins
+        if per_file_stdout:
+            print(f"Gusto ({f.name}): read {r}, inserted {ins} run(s).")
+    return succeeded, total_r, total_i
+
+
 def _inbox_files(inbox_dir: Path, subdir: str, extensions: tuple[str, ...]) -> list[Path]:
     folder = inbox_dir / subdir
     if not folder.exists():
@@ -451,6 +477,7 @@ def _cmd_wave_sync_meta(args: argparse.Namespace) -> int:
 
 def _cmd_ingest(args: argparse.Namespace) -> int:
     cfg, db = _open_context(Path(args.config))
+    failures: list[tuple[Path, str]] = []
     with db:
         target = args.ingest_target
         if target == "harvest":
@@ -516,19 +543,15 @@ def _cmd_ingest(args: argparse.Namespace) -> int:
             )
 
         elif target == "gusto":
-            files = (
-                [Path(args.file)]
-                if args.file
-                else _inbox_files(cfg.general.inbox_dir, "gusto", (".csv",))
-            )
-            total_r = total_i = 0
-            for f in files:
-                r, ins = _ingest_gusto_file(db, cfg, f, args.run_type)
-                total_r += r
-                total_i += ins
-            print(
-                f"Gusto: {len(files)} file(s), read {total_r}, inserted {total_i} payroll run(s)."
-            )
+            if args.file:
+                r, ins = _ingest_gusto_file(db, cfg, Path(args.file), args.run_type)
+                print(f"Gusto: 1 file(s), read {r}, inserted {ins} payroll run(s).")
+            else:
+                succeeded, total_r, total_i = _ingest_gusto_inbox(db, cfg, args.run_type, failures)
+                print(
+                    f"Gusto: {succeeded} file(s), read {total_r}, "
+                    f"inserted {total_i} payroll run(s)."
+                )
 
         elif target == "all":
             if cfg.harvest.access_token and cfg.harvest.account_id:
@@ -557,9 +580,11 @@ def _cmd_ingest(args: argparse.Namespace) -> int:
                 r, ins = _ingest_capital_one_file(db, f)
                 print(f"Capital One ({f.name}): read {r}, inserted {ins}.")
 
-            for f in _inbox_files(cfg.general.inbox_dir, "gusto", (".csv",)):
-                r, ins = _ingest_gusto_file(db, cfg, f, "regular")
-                print(f"Gusto ({f.name}): read {r}, inserted {ins} run(s).")
+            _ingest_gusto_inbox(db, cfg, "regular", failures, per_file_stdout=True)
+    if failures:
+        names = ", ".join(path.name for path, _ in failures)
+        print(f"Ingest completed with {len(failures)} failed file(s): {names}", file=sys.stderr)
+        return 2
     return 0
 
 

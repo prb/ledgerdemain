@@ -22,7 +22,7 @@ from ledgerdemain.adapters.grasshopper import (
     GrasshopperParseError,
 )
 from ledgerdemain.adapters.gusto import GustoParseError, GustoPayrollCsvAdapter
-from ledgerdemain.adapters.harvest import HarvestApiAdapter, HarvestCsvAdapter, HarvestParseError
+from ledgerdemain.adapters.harvest import HarvestApiAdapter, HarvestParseError
 from ledgerdemain.adapters.ofx import OfxParseError, OfxTransactionParser
 from ledgerdemain.categorize import Categorizer
 from ledgerdemain.cli import main
@@ -40,7 +40,6 @@ from tests.fixtures import (
     SAMPLE_GRASSHOPPER_CSV,
     SAMPLE_GUSTO_CONTRACTOR_CSV,
     SAMPLE_GUSTO_PAYROLL_CSV,
-    SAMPLE_HARVEST_CSV,
     SAMPLE_OFX_SGML,
     RoutingMockTransport,
     create_synthetic_pdf,
@@ -143,17 +142,6 @@ def test_harvest_api_pagination_and_updated_since() -> None:
     assert invoices[0].subtotal == Money.parse("3000.00")
     assert payments[0].payment_gateway == "ACH"
     assert any("updated_since=2026-01-01T00%3A00%3A00Z" in u for _, u, _ in transport.requests)
-
-
-def test_harvest_csv_adapter(tmp_path: Path) -> None:
-    p = tmp_path / "harvest.csv"
-    p.write_text(SAMPLE_HARVEST_CSV, encoding="utf-8")
-    invs = HarvestCsvAdapter().parse_file(p)
-
-    assert len(invs) == 3
-    assert invs[0].invoice_number == "1001"
-    assert invs[0].total_amount == Money.parse("3000.00")
-    assert invs[2].due_amount == Money.parse("1500.00")
 
 
 def test_grasshopper_api_and_csv_and_ofx(tmp_path: Path) -> None:
@@ -1661,21 +1649,17 @@ def test_cli_gusto_ingest_file_failure_and_inbox_partial_success(tmp_path: Path)
     all_ws = tmp_path / "all_ws"
     all_ws.mkdir()
     all_cfg = write_test_workspace_config(all_ws, include_api_creds=False)
-    (all_ws / "inbox/harvest").mkdir(parents=True, exist_ok=True)
-    (all_ws / "inbox/harvest/invoices.csv").write_text(SAMPLE_HARVEST_CSV, encoding="utf-8")
     (all_ws / "inbox/gusto").mkdir(parents=True, exist_ok=True)
     (all_ws / "inbox/gusto/01_corrupt.csv").write_text(bad_csv, encoding="utf-8")
     (all_ws / "inbox/gusto/02_valid.csv").write_text(SAMPLE_GUSTO_PAYROLL_CSV, encoding="utf-8")
 
     code, out, err = _run_cli_main(all_cfg, ["ingest", "all"])
     assert code == 2
-    assert "Harvest CSV (invoices.csv): 3 invoices." in out
     assert "Gusto (02_valid.csv): read 1, inserted 1 run(s)." in out
     assert "Error ingesting Gusto (01_corrupt.csv):" in err
     assert "Ingest completed with 1 failed file(s): 01_corrupt.csv" in err
     with LedgerDB(all_ws / "data/ledgerdemain.db") as db:
         assert len(db.list_gusto_payroll_runs()) == 1
-        assert len(db.list_harvest_invoices()) == 3
 
 
 def _write_gusto_inbox(root: Path, *, corrupt: bool = False) -> None:

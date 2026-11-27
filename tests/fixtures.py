@@ -245,22 +245,6 @@ Posted Date,Transaction Date,Description,Debit,Credit,Category
 2026-01-15,2026-01-15,STRIPE TRANSFER WIDGET LABS,,1940.00,Deposit
 """
 
-SAMPLE_HARVEST_CSV = (
-    "\n".join(
-        [
-            "Invoice #,Client,Issue Date,Due Date,Paid Date,Status,Subtotal,Tax,Amount,Balance,"
-            "Subject",
-            "1001,Acme Corp,2025-12-20,2026-01-19,2026-01-05,Paid,3000.00,0.00,3000.00,0.00,"
-            "December Consulting",
-            "1002,Widget Labs,2026-01-02,2026-02-01,2026-01-15,Paid,2000.00,0.00,2000.00,0.00,"
-            "January Sprint",
-            "1003,Beta Partners,2026-01-10,2026-02-09,,Open,1500.00,0.00,1500.00,1500.00,"
-            "Strategy Retainer",
-        ]
-    )
-    + "\n"
-)
-
 SAMPLE_GUSTO_PAYROLL_CSV = (
     "\n".join(
         [
@@ -778,7 +762,7 @@ E2E_CAPITAL_ONE_STATEMENT_OFX = build_ofx_xml(
     ],
 )
 
-# Harvest API v2 payloads for the same three invoices as SAMPLE_HARVEST_CSV.
+# Harvest API v2 payloads for three invoices (1001-1003).
 E2E_HARVEST_CLIENTS: dict[str, Any] = {
     "clients": [
         {"id": 1, "name": "Acme Corp", "currency": "USD", "is_active": True},

@@ -268,12 +268,15 @@ class WaveGraphQLClient:
         self.access_token = access_token
         self.http = http_client or HttpClient()
 
-    def _gql(self, query: str, variables: dict[str, Any] | None = None) -> dict[str, Any]:
+    def _gql(
+        self, query: str, variables: dict[str, Any] | None = None, *, idempotent: bool = True
+    ) -> dict[str, Any]:
         return self.http.post_graphql(
             endpoint=self.endpoint,
             access_token=self.access_token,
             query=query,
             variables=variables,
+            idempotent=idempotent,
         )
 
     def get_business(self, business_id: str) -> dict[str, Any]:
@@ -413,7 +416,7 @@ class WaveGraphQLClient:
         payload: dict[str, Any] = {"businessId": business_id, "name": name}
         if email:
             payload["email"] = email
-        data = self._gql(_CUSTOMER_CREATE_MUTATION, {"input": payload})
+        data = self._gql(_CUSTOMER_CREATE_MUTATION, {"input": payload}, idempotent=False)
         res = data.get("customerCreate") or {}
         if not res.get("didSucceed"):
             raise WaveApiError("customerCreate", res.get("inputErrors") or [])
@@ -438,7 +441,7 @@ class WaveGraphQLClient:
             "unitPrice": unit_price,
             "incomeAccountId": income_account_id,
         }
-        data = self._gql(_PRODUCT_CREATE_MUTATION, {"input": payload})
+        data = self._gql(_PRODUCT_CREATE_MUTATION, {"input": payload}, idempotent=False)
         res = data.get("productCreate") or {}
         if not res.get("didSucceed"):
             raise WaveApiError("productCreate", res.get("inputErrors") or [])
@@ -471,7 +474,7 @@ class WaveGraphQLClient:
             "status": status,
             "items": items,
         }
-        data = self._gql(_INVOICE_CREATE_MUTATION, {"input": payload})
+        data = self._gql(_INVOICE_CREATE_MUTATION, {"input": payload}, idempotent=False)
         res = data.get("invoiceCreate") or {}
         if not res.get("didSucceed"):
             raise WaveApiError("invoiceCreate", res.get("inputErrors") or [])
@@ -479,7 +482,7 @@ class WaveGraphQLClient:
 
     def create_money_transaction(self, payload: dict[str, Any]) -> dict[str, Any]:
         """Create a money transaction via moneyTransactionCreate mutation."""
-        data = self._gql(_MONEY_TX_CREATE_MUTATION, {"input": payload})
+        data = self._gql(_MONEY_TX_CREATE_MUTATION, {"input": payload}, idempotent=False)
         res = data.get("moneyTransactionCreate") or {}
         if not res.get("didSucceed"):
             raise WaveApiError("moneyTransactionCreate", res.get("inputErrors") or [])

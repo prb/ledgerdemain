@@ -7,6 +7,7 @@ from typing import Any
 
 from ledgerdemain.config import AppConfig, ConfigError
 from ledgerdemain.db import LedgerDB
+from ledgerdemain.http_client import OutcomeUnknownError
 from ledgerdemain.models import (
     StagedInvoice,
     StagedTransaction,
@@ -105,11 +106,33 @@ class WaveSyncService:
         invoices_only: bool = False,
         transactions_only: bool = False,
     ) -> PushSummary:
-        """Validate and push approved staged invoices and/or transactions to Wave."""
+        """Validate and push approved staged invoices and/or transactions to Wave.
+
+        If a create request fails with an unknown outcome (it may have been applied in Wave),
+        the push stops so no further records are sent. A staged invoice or transaction in that
+        state is marked failed, so it isn't pushed again until it is checked and re-approved.
+        """
         if invoices_only and transactions_only:
             raise ValueError("Cannot pass both invoices_only and transactions_only")
 
         summary = PushSummary(dry_run=dry_run)
+        try:
+            self._push_approved(summary, dry_run, invoices_only, transactions_only)
+        except OutcomeUnknownError as err:
+            summary.errors.append(
+                f"Push stopped after a Wave request with an unknown outcome ({err}). "
+                "Remaining approved records were not sent. Run 'ledgerdemain wave sync-meta' "
+                "before pushing again so a customer or product that was created is reused."
+            )
+        return summary
+
+    def _push_approved(
+        self,
+        summary: PushSummary,
+        dry_run: bool,
+        invoices_only: bool,
+        transactions_only: bool,
+    ) -> None:
         if not dry_run:
             self._require_client()
 
@@ -209,6 +232,15 @@ class WaveSyncService:
                 self.db.mark_staged_failed("invoice", inv.id, str(err))
                 summary.invoices_failed += 1
                 summary.errors.append(f"Invoice #{inv.invoice_number}: {err}")
+            except OutcomeUnknownError as err:
+                msg = (
+                    f"Outcome unknown, invoice may exist in Wave; check for invoice "
+                    f"#{inv.invoice_number} before re-approving: {err}"
+                )
+                self.db.mark_staged_failed("invoice", inv.id, msg)
+                summary.invoices_failed += 1
+                summary.errors.append(f"Invoice #{inv.invoice_number}: {msg}")
+                raise
 
         # Push approved money transactions
         for tx in approved_txs:
@@ -282,8 +314,15 @@ class WaveSyncService:
                 self.db.mark_staged_failed("transaction", tx.id, str(err))
                 summary.transactions_failed += 1
                 summary.errors.append(f"Staged tx #{tx.id} ({tx.description}): {err}")
-
-        return summary
+            except OutcomeUnknownError as err:
+                msg = (
+                    f"Outcome unknown, transaction may exist in Wave; check for externalId "
+                    f"{tx.external_id} before re-approving: {err}"
+                )
+                self.db.mark_staged_failed("transaction", tx.id, msg)
+                summary.transactions_failed += 1
+                summary.errors.append(f"Staged tx #{tx.id} ({tx.description}): {msg}")
+                raise
 
     def _normal_balance_lookup(self, account_key: str) -> str:
         cached = self.db.resolve_wave_account(account_key, self.config.accounts)

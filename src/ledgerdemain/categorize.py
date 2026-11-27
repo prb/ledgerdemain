@@ -34,10 +34,6 @@ class Categorizer:
                 continue
             if rule.max_amount is not None and tx.amount > rule.max_amount:
                 continue
-            if rule.source_category_pattern is not None and not rule.source_category_pattern.search(
-                tx.source_category or ""
-            ):
-                continue
             if not rule.description_pattern.search(tx.description):
                 continue
 

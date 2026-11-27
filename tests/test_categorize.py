@@ -5,8 +5,10 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+import pytest
+
 from ledgerdemain.categorize import Categorizer
-from ledgerdemain.config import CategorizationRule, load_rules
+from ledgerdemain.config import CategorizationRule, ConfigError, load_rules
 from ledgerdemain.models import BankTransaction
 from ledgerdemain.money import Money
 from tests.fixtures import write_test_workspace_config
@@ -21,7 +23,6 @@ def _tx(
     description: str = "SOME MERCHANT",
     amount: Money = _DEFAULT_AMOUNT,
     direction: str = "WITHDRAWAL",
-    source_category: str = "",
 ) -> BankTransaction:
     return BankTransaction(
         source=source,
@@ -34,11 +35,10 @@ def _tx(
         normalized_description=description.upper(),
         amount=amount,
         direction=direction,
-        source_category=source_category,
     )
 
 
-def test_rule_priority_source_direction_category_and_bounds(tmp_path: Path) -> None:
+def test_rule_priority_source_direction_and_bounds(tmp_path: Path) -> None:
     write_test_workspace_config(tmp_path)
     rules = load_rules(tmp_path / "rules.toml")
     cat = Categorizer(rules)
@@ -64,16 +64,24 @@ def test_rule_priority_source_direction_category_and_bounds(tmp_path: Path) -> N
     assert res_refund is not None
     assert res_refund.account_key == "software_subscriptions"
 
-    # Source category fallback
-    res_dining = cat.categorize(_tx(description="CORNER BISTRO", source_category="Dining"))
-    assert res_dining is not None
-    assert res_dining.account_key == "meals"
-
     # Unmatched returns None
-    assert (
-        cat.categorize(_tx(description="MYSTERY HARDWARE CO", source_category="Merchandise"))
-        is None
+    assert cat.categorize(_tx(description="MYSTERY HARDWARE CO")) is None
+
+
+def test_load_rules_rejects_source_category_regex(tmp_path: Path) -> None:
+    rules_path = tmp_path / "rules.toml"
+    rules_path.write_text(
+        """
+[[rules]]
+name = "Old Dining Fallback"
+source_category_regex = "(?i)^dining$"
+description_regex = ".*"
+account_key = "meals"
+""",
+        encoding="utf-8",
     )
+    with pytest.raises(ConfigError, match=r"'Old Dining Fallback'.*source_category_regex"):
+        load_rules(rules_path)
 
 
 def test_officer_health_insurance_and_hsa_rules_split() -> None:

@@ -191,15 +191,6 @@ priority = 50
 direction = "WITHDRAWAL"
 description_regex = "(?i)(united\\\\s*air|delta\\\\s*air|american\\\\s*air|southwest|marriott)"
 account_key = "travel"
-
-[[rules]]
-name = "Capital One Dining Fallback"
-priority = 85
-source = "capital_one"
-direction = "WITHDRAWAL"
-source_category_regex = "(?i)^dining$"
-description_regex = ".*"
-account_key = "meals"
 """,
         encoding="utf-8",
     )

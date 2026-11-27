@@ -227,7 +227,6 @@ class CategorizationRule:
     description_pattern: re.Pattern[str]
     source: str | None = None
     direction: str | None = None
-    source_category_pattern: re.Pattern[str] | None = None
     min_amount: Money | None = None
     max_amount: Money | None = None
     notes: str = ""
@@ -396,7 +395,12 @@ def load_rules(path: Path) -> list[CategorizationRule]:
         if not account_key or not desc_regex:
             raise ConfigError(f"Rule {name!r} requires both 'account_key' and 'description_regex'")
 
-        source_cat_raw = item.get("source_category_regex")
+        if "source_category_regex" in item:
+            raise ConfigError(
+                f"Rule {name!r} uses 'source_category_regex', which is no longer supported: "
+                "OFX carries no merchant category. Remove the key (and the rule if it only "
+                "matched on category)."
+            )
         min_amt = item.get("min_amount")
         max_amt = item.get("max_amount")
         direction = item.get("direction")
@@ -409,7 +413,6 @@ def load_rules(path: Path) -> list[CategorizationRule]:
                 description_pattern=re.compile(desc_regex),
                 source=str(item["source"]) if item.get("source") else None,
                 direction=str(direction).upper() if direction else None,
-                source_category_pattern=re.compile(str(source_cat_raw)) if source_cat_raw else None,
                 min_amount=parse_money(min_amt) if min_amt is not None else None,
                 max_amount=parse_money(max_amt) if max_amt is not None else None,
                 notes=str(item.get("notes", "")),

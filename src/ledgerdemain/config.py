@@ -398,8 +398,8 @@ def load_rules(path: Path) -> list[CategorizationRule]:
         if "source_category_regex" in item:
             raise ConfigError(
                 f"Rule {name!r} uses 'source_category_regex', which is no longer supported: "
-                "OFX carries no merchant category. Remove the key (and the rule if it only "
-                "matched on category)."
+                "Capital One OFX carries no merchant category. Remove the key (and the rule if "
+                "it only matched on category)."
             )
         min_amt = item.get("min_amount")
         max_amt = item.get("max_amount")

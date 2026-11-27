@@ -37,7 +37,6 @@ def _tx(
     amt: str,
     direction: str,
     fp: str,
-    cat: str = "",
 ) -> BankTransaction:
     return BankTransaction(
         source=source,
@@ -50,7 +49,6 @@ def _tx(
         normalized_description=desc.upper(),
         amount=Money.parse(amt),
         direction=direction,
-        source_category=cat,
     )
 
 
@@ -315,7 +313,6 @@ def test_cc_transfer_manual_vs_clearing_and_unpaired(
                     "500.00",
                     "DEPOSIT",
                     "co-p",
-                    "CREDIT",
                 ),
                 _tx(
                     "grasshopper",
@@ -405,22 +402,22 @@ def test_switching_off_invoice_mirroring_clears_unpushed_staged_invoices(
 
 
 @pytest.mark.parametrize(
-    ("desc", "category", "expected_rule"),
+    ("desc", "expected_rule"),
     [
-        ("CAPITAL ONE ONLINE PYMT", "CREDIT", "unpaired_cc_payment"),
-        ("CAPITAL ONE MOBILE PYMT", "CREDIT", "unpaired_cc_payment"),
-        ("ACME REFUND", "Payment/Credit", None),
+        ("CAPITAL ONE ONLINE PYMT", "unpaired_cc_payment"),
+        ("CAPITAL ONE MOBILE PYMT", "unpaired_cc_payment"),
+        ("ACME REFUND", None),
     ],
 )
 def test_unpaired_capital_one_credit_uses_description_pattern_only(
-    tmp_path: Path, desc: str, category: str, expected_rule: str | None
+    tmp_path: Path, desc: str, expected_rule: str | None
 ) -> None:
     cfg = make_test_config(tmp_path)
     rules = load_rules(cfg.general.rules_path)
     with LedgerDB(cfg.general.db_path) as db:
         db.init_schema()
         db.upsert_bank_transactions(
-            [_tx("capital_one", "2026-01-12", desc, "75.00", "DEPOSIT", "co-x", category)]
+            [_tx("capital_one", "2026-01-12", desc, "75.00", "DEPOSIT", "co-x")]
         )
         Reconciler(db, cfg).reconcile_all(confirm_high_confidence=True)
         Planner(db, cfg, Categorizer(rules)).build_plan()

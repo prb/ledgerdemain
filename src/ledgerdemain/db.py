@@ -146,7 +146,6 @@ class LedgerDB:
                     normalized_description TEXT NOT NULL,
                     amount TEXT NOT NULL,
                     direction TEXT NOT NULL,
-                    source_category TEXT NOT NULL DEFAULT '',
                     card_last4 TEXT NOT NULL DEFAULT '',
                     status TEXT NOT NULL DEFAULT 'posted',
                     raw_json TEXT NOT NULL,
@@ -494,9 +493,9 @@ class LedgerDB:
                     INSERT OR IGNORE INTO bank_transactions (
                         batch_id, source, account_key, external_id, fingerprint,
                         tx_date, posted_date, description, normalized_description,
-                        amount, direction, source_category, card_last4, status,
+                        amount, direction, card_last4, status,
                         raw_json, created_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         batch_id,
@@ -510,7 +509,6 @@ class LedgerDB:
                         tx.normalized_description,
                         format_money(tx.amount),
                         tx.direction,
-                        tx.source_category,
                         tx.card_last4,
                         tx.status,
                         json.dumps(tx.raw, sort_keys=True),
@@ -535,7 +533,6 @@ class LedgerDB:
             normalized_description=str(row["normalized_description"]),
             amount=parse_money(row["amount"]),
             direction=str(row["direction"]),
-            source_category=str(row["source_category"]),
             card_last4=str(row["card_last4"]),
             status=str(row["status"]),
             raw=json.loads(row["raw_json"]),

@@ -397,3 +397,25 @@ def test_grasshopper_file_ingest_rejects_csv(tmp_path: Path) -> None:
             _ingest_grasshopper_file(db, cfg, gh_csv)
         assert _count(db, "bank_transactions") == 0
         assert _count(db, "ingestion_batches") == 0
+
+
+def test_existing_database_with_source_category_column_still_ingests(tmp_path: Path) -> None:
+    """Databases created before the field was removed keep the NOT NULL column with its default."""
+    cfg = make_test_config(tmp_path, include_api_creds=False)
+    co_ofx = tmp_path / "co.ofx"
+    co_ofx.write_text(SAMPLE_CAPITAL_ONE_OFX_XML, encoding="utf-8")
+
+    with LedgerDB(cfg.general.db_path) as db:
+        db.init_schema()
+        db.conn.execute(
+            "ALTER TABLE bank_transactions ADD COLUMN source_category TEXT NOT NULL DEFAULT ''"
+        )
+
+        read_cnt, ins_cnt = _ingest_capital_one_file(db, co_ofx, expected_currency="USD")
+
+        assert read_cnt > 0
+        assert ins_cnt == read_cnt
+        assert _count(db, "bank_transactions") == ins_cnt
+        row = db.conn.execute("SELECT DISTINCT source_category FROM bank_transactions").fetchall()
+        assert [r["source_category"] for r in row] == [""]
+        assert len(db.list_bank_transactions()) == ins_cnt

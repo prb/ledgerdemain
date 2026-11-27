@@ -61,10 +61,12 @@ uv run --extra dev pytest -v
 ## Source Setup
 
 ### Secrets & macOS Keychain
-- API tokens (`WAVE_ACCESS_TOKEN`, `HARVEST_ACCESS_TOKEN`, `GRASSHOPPER_ACCESS_TOKEN`, `GRASSHOPPER_HEADER_SECRET`) use explicit `${keychain:NAME}` placeholders in `ledgerdemain.toml`, resolved at runtime via `/usr/bin/security` under `[general] keychain_service` (default `"ledgerdemain"`, or e.g. `"ledgerdemain:prod"` to namespace environments):
+- API tokens (`WAVE_ACCESS_TOKEN`, `HARVEST_ACCESS_TOKEN`, `GRASSHOPPER_ACCESS_TOKEN`, `GRASSHOPPER_HEADER_SECRET`) use explicit `${keychain:NAME}` placeholders in `ledgerdemain.toml`, resolved at runtime via `/usr/bin/security` under literal `[general] keychain_service` (default `"ledgerdemain"`, or e.g. `"ledgerdemain:prod"` to namespace environments):
   ```bash
   security add-generic-password -U -s ledgerdemain -a <NAME> -w
   ```
+- Store printable ASCII tokens only (`security -w` prints values with non-printable bytes hex-encoded).
+- Every referenced `${keychain:NAME}` placeholder is read when loading configuration and fails if missing; blank out (`""`) or remove placeholders for APIs you do not use so `ingest all` skips them.
 - Non-secret IDs and environment overrides use `${ENV_VAR}` placeholders resolved strictly from process environment variables (`os.environ`); `.env` files are not loaded.
 
 ### 1. Wave Accounting (GraphQL API)

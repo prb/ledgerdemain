@@ -73,7 +73,6 @@ header_secret = "${keychain:GRASSHOPPER_HEADER_SECRET}"
 [[grasshopper.accounts]]
 account_key = "grasshopper_savings"
 account_id = "${keychain:GH_SAV_ID}"
-acctid_last4 = "1111"
 """,
         encoding="utf-8",
     )
@@ -104,12 +103,15 @@ acctid_last4 = "1111"
     assert len(calls) == 5
     for cmd, kwargs in calls:
         assert cmd[:4] == ["/usr/bin/security", "find-generic-password", "-s", "ledgerdemain"]
-        assert kwargs == {"capture_output": True, "text": True, "check": False}
+        assert kwargs == {
+            "capture_output": True,
+            "text": True,
+            "timeout": 10,
+            "check": False,
+        }
 
 
-def test_custom_keychain_service_literal_and_from_env(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_custom_keychain_service_literal(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     calls: list[tuple[list[str], dict[str, Any]]] = []
     secrets = {("ledgerdemain:prod", "WAVE_ACCESS_TOKEN"): "prod-wave\n"}
     monkeypatch.setattr(
@@ -130,23 +132,8 @@ access_token = "${keychain:WAVE_ACCESS_TOKEN}"
     cfg = load_config(literal_cfg)
     assert cfg.general.keychain_service == "ledgerdemain:prod"
     assert cfg.wave.access_token == "prod-wave"
-
-    monkeypatch.setenv("TEST_KC_SVC", "ledgerdemain:prod")
-    env_cfg = tmp_path / "env.toml"
-    env_cfg.write_text(
-        """[general]
-keychain_service = "${TEST_KC_SVC}"
-
-[wave]
-access_token = "${keychain:WAVE_ACCESS_TOKEN}"
-""",
-        encoding="utf-8",
-    )
-    cfg2 = load_config(env_cfg)
-    assert cfg2.general.keychain_service == "ledgerdemain:prod"
-    assert cfg2.wave.access_token == "prod-wave"
-    assert len(calls) == 2
-    assert all(cmd[3] == "ledgerdemain:prod" for cmd, _ in calls)
+    assert len(calls) == 1
+    assert calls[0][0][3] == "ledgerdemain:prod"
 
 
 def test_default_keychain_service_when_omitted(
@@ -251,6 +238,32 @@ access_token = "${keychain:WAVE_ACCESS_TOKEN}"
     assert "WAVE_ACCESS_TOKEN" in msg
 
 
+def test_keychain_timeout_raises_config_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cfg_path = tmp_path / "ledgerdemain.toml"
+    cfg_path.write_text(
+        """[wave]
+access_token = "${keychain:WAVE_ACCESS_TOKEN}"
+""",
+        encoding="utf-8",
+    )
+
+    def _timed_out(cmd: list[str], **_kwargs: Any) -> subprocess.CompletedProcess[str]:
+        raise subprocess.TimeoutExpired(cmd=cmd, timeout=10)
+
+    monkeypatch.setattr("ledgerdemain.config.subprocess.run", _timed_out)
+
+    with pytest.raises(ConfigError) as exc_info:
+        load_config(cfg_path)
+
+    msg = str(exc_info.value)
+    assert "Timed out" in msg
+    assert "10s" in msg
+    assert "ledgerdemain" in msg
+    assert "WAVE_ACCESS_TOKEN" in msg
+
+
 def test_keychain_empty_secret_raises_config_error(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -298,12 +311,12 @@ access_token = "{placeholder}"
 
 @pytest.mark.parametrize(
     "service_toml",
-    ['""', '"   "', '"bad service"', '"${keychain:SVC}"', '"${UNSET_KC_SVC}"', "123"],
+    ['""', '"   "', '"bad service"', '"${keychain:SVC}"', '"${TEST_KC_SVC}"', "123"],
 )
 def test_invalid_keychain_service_fails_loudly(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, service_toml: str
 ) -> None:
-    monkeypatch.delenv("UNSET_KC_SVC", raising=False)
+    monkeypatch.setenv("TEST_KC_SVC", "ledgerdemain:prod")
     cfg_path = tmp_path / "ledgerdemain.toml"
     cfg_path.write_text(
         f"""[general]
@@ -388,7 +401,6 @@ def test_example_config_and_cli_fallback_use_keychain_placeholders() -> None:
 def test_load_config_resolve_keychain_false_validates_syntax_without_subprocess(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.delenv("UNSET_KC_SVC", raising=False)
     monkeypatch.setattr(
         "ledgerdemain.config.subprocess.run",
         lambda *_args, **_kwargs: pytest.fail("security must not run when resolve_keychain=False"),

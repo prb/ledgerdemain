@@ -1,6 +1,7 @@
 # Ledgerdemain configuration template
 # Copy to `ledgerdemain.toml`, store API secrets in macOS Keychain (`${keychain:NAME}`),
 # and populate non-secret IDs or `${ENV_VAR}` environment variables.
+# Remove or set "" for any API credentials you do not use; all referenced ${keychain:...} items must exist.
 
 [general]
 db_path = "data/ledgerdemain.db"

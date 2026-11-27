@@ -19,6 +19,7 @@ _ENV_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _PLACEHOLDER_PATTERN = re.compile(r"\$\{([^{}]+)\}")
 _KEYCHAIN_PREFIX = "keychain:"
 _KEYCHAIN_NOT_FOUND_RC = 44
+_KEYCHAIN_TIMEOUT_SECONDS = 10
 
 VALID_DEPOSIT_STRATEGIES = {"ar_clearing", "manual_ui_payment", "direct_income"}
 VALID_INVOICE_STATUSES = {"SAVED", "DRAFT"}
@@ -56,8 +57,15 @@ def read_keychain_secret(service: str, account: str) -> str:
             ],
             capture_output=True,
             text=True,
+            timeout=_KEYCHAIN_TIMEOUT_SECONDS,
             check=False,
         )
+    except subprocess.TimeoutExpired as exc:
+        raise ConfigError(
+            f"Timed out after {_KEYCHAIN_TIMEOUT_SECONDS}s reading macOS Keychain item "
+            f"service={service!r}, account={account!r} "
+            "(Keychain may be locked or waiting for an interactive authorization prompt)"
+        ) from exc
     except OSError as exc:
         raise ConfigError(
             f"Failed to read macOS Keychain item service={service!r}, account={account!r}: "
@@ -85,32 +93,15 @@ def read_keychain_secret(service: str, account: str) -> str:
     return secret
 
 
-def _resolve_env_only(value: str, env_vars: Mapping[str, str]) -> str:
-    """Resolve ${ENV_VAR} tokens from process environment without Keychain access."""
-
-    def _replace(match: re.Match[str]) -> str:
-        inner = match.group(1)
-        if inner.startswith(_KEYCHAIN_PREFIX):
-            raise ConfigError(
-                "general.keychain_service cannot reference ${keychain:...} placeholders"
-            )
-        if _ENV_NAME_RE.fullmatch(inner):
-            return env_vars.get(inner, "")
-        return match.group(0)
-
-    return _PLACEHOLDER_PATTERN.sub(_replace, value)
-
-
-def _resolve_keychain_service(raw_toml: dict[str, Any], env_vars: Mapping[str, str]) -> str:
-    """Extract and validate general.keychain_service prior to Keychain secret resolution."""
+def _resolve_keychain_service(raw_toml: dict[str, Any]) -> str:
+    """Extract and validate literal general.keychain_service prior to Keychain lookups."""
     gen_raw = raw_toml.get("general", {})
     if not isinstance(gen_raw, dict):
         raise ConfigError("[general] must be a TOML table")
     raw_service = gen_raw.get("keychain_service", DEFAULT_KEYCHAIN_SERVICE)
     if not isinstance(raw_service, str):
         raise ConfigError("general.keychain_service must be a string")
-    service = _resolve_env_only(raw_service, env_vars).strip()
-    return _validate_keychain_identifier(service, "service")
+    return _validate_keychain_identifier(raw_service.strip(), "service")
 
 
 def _resolve_placeholders(
@@ -343,7 +334,7 @@ def load_config(path: Path, *, resolve_keychain: bool = True) -> AppConfig:
     with config_path.open("rb") as fh:
         raw_toml = tomllib.load(fh)
     env_vars = os.environ
-    keychain_service = _resolve_keychain_service(raw_toml, env_vars)
+    keychain_service = _resolve_keychain_service(raw_toml)
     keychain_cache: dict[tuple[str, str], str] = {}
     raw = _resolve_dict_placeholders(
         raw_toml,

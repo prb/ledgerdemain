@@ -6,7 +6,13 @@ import http.client
 
 import pytest
 
-from ledgerdemain.http_client import HttpClient, HttpError, HttpResponse, OutcomeUnknownError
+from ledgerdemain.http_client import (
+    GraphQLError,
+    HttpClient,
+    HttpError,
+    HttpResponse,
+    OutcomeUnknownError,
+)
 
 
 class _ScriptedTransport:
@@ -103,3 +109,54 @@ def test_idempotent_request_still_retries_server_errors() -> None:
     resp = _client(transport).request_bytes("POST", "https://example.test")
     assert resp.status == 200
     assert transport.calls == 2
+
+
+def _ok_with(body: bytes) -> _ScriptedTransport:
+    return _ScriptedTransport(HttpResponse(status=200, headers={}, body=body))
+
+
+@pytest.mark.parametrize("body", [b"", b"not json", b"\xff\xfe"])
+def test_non_idempotent_unusable_body_is_outcome_unknown(body: bytes) -> None:
+    transport = _ok_with(body)
+    with pytest.raises(OutcomeUnknownError, match="may have been applied"):
+        _client(transport).request_json("POST", "https://example.test", idempotent=False)
+    assert transport.calls == 1
+
+
+def test_idempotent_empty_body_still_returns_empty_dict() -> None:
+    assert _client(_ok_with(b"")).request_json("GET", "https://example.test") == {}
+
+
+def test_idempotent_invalid_json_still_raises_value_error() -> None:
+    with pytest.raises(ValueError) as exc_info:
+        _client(_ok_with(b"not json")).request_json("GET", "https://example.test")
+    assert not isinstance(exc_info.value, OutcomeUnknownError)
+
+
+def _post(body: bytes, *, idempotent: bool) -> dict[str, object]:
+    return _client(_ok_with(body)).post_graphql(
+        "https://example.test", "token", "query { x }", idempotent=idempotent
+    )
+
+
+@pytest.mark.parametrize("body", [b"", b"not json", b"[]", b"{}", b'{"data": null}'])
+def test_non_idempotent_graphql_without_data_or_errors_is_outcome_unknown(body: bytes) -> None:
+    with pytest.raises(OutcomeUnknownError, match="may have been applied"):
+        _post(body, idempotent=False)
+
+
+def test_non_idempotent_graphql_errors_stay_definite() -> None:
+    with pytest.raises(GraphQLError):
+        _post(b'{"errors": [{"message": "bad"}], "data": null}', idempotent=False)
+
+
+def test_idempotent_graphql_empty_body_still_returns_empty_data() -> None:
+    assert _post(b"", idempotent=True) == {}
+    assert _post(b"{}", idempotent=True) == {}
+    assert _post(b'{"data": null}', idempotent=True) == {}
+
+
+def test_idempotent_graphql_non_object_is_still_http_error() -> None:
+    with pytest.raises(HttpError) as exc_info:
+        _post(b"[]", idempotent=True)
+    assert not isinstance(exc_info.value, OutcomeUnknownError)

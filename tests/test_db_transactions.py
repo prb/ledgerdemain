@@ -21,6 +21,7 @@ from ledgerdemain.models import (
     HarvestInvoice,
     HarvestInvoiceLineItem,
     HarvestPayment,
+    WaveAccount,
 )
 from ledgerdemain.money import Money
 from tests.fixtures import (
@@ -40,6 +41,7 @@ _ALLOWED_TABLES = frozenset(
         "harvest_payments",
         "ingestion_batches",
         "sync_state",
+        "wave_accounts",
     }
 )
 
@@ -323,3 +325,49 @@ def test_atomic_batches_commit_counts_links_cursors_and_stay_idempotent(tmp_path
         # Standalone cursor write outside transaction() still auto-commits cleanly
         db.set_sync_cursor("manual_check", "2026-01-31")
         assert db.get_sync_cursor("manual_check") == "2026-01-31"
+
+
+def test_nested_transaction_rolls_back_all_composed_writes_on_inner_failure(tmp_path: Path) -> None:
+    cfg = make_test_config(tmp_path, include_api_creds=False)
+    checking = WaveAccount(
+        wave_id="wave-chk-1",
+        name="Grasshopper Checking",
+        account_type="ASSET",
+        account_subtype="CASH_AND_BANK",
+        normal_balance_type="DEBIT",
+    )
+    bad_dup_check = WaveAccount(
+        wave_id="wave-chk-2",
+        name="Duplicate Triggered",
+        account_type="ASSET",
+        account_subtype="CASH_AND_BANK",
+        normal_balance_type="DEBIT",
+    )
+
+    with LedgerDB(cfg.general.db_path) as db:
+        db.init_schema()
+        _install_abort_trigger(
+            db,
+            name="fail_second_wave_account",
+            timing="BEFORE INSERT",
+            table="wave_accounts",
+            when_clause="NEW.wave_id = 'wave-chk-2'",
+        )
+
+        # Nested DML methods must not commit early; an inner failure propagated out rolls all back.
+        with (
+            pytest.raises(sqlite3.IntegrityError, match="simulated write failure"),
+            db.transaction(),
+        ):
+            db.set_sync_cursor("nested_test", "2026-01-01")
+            db.upsert_wave_accounts([checking])
+            with db.transaction():
+                db.upsert_wave_accounts([bad_dup_check])
+
+        assert _count(db, "sync_state") == 0
+        assert _count(db, "wave_accounts") == 0
+        assert db._tx_depth == 0
+
+        # Connection remains usable and commits subsequent valid writes cleanly
+        db.upsert_wave_accounts([checking])
+        assert _count(db, "wave_accounts") == 1

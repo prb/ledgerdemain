@@ -84,9 +84,11 @@ class LedgerDB:
         """Run operations inside an atomic transaction, joining any active outer one.
 
         Nested ``transaction()`` blocks participate in the outermost SQLite transaction
-        rather than committing early. Because SQLite rolls back the entire outer
-        transaction on an unhandled exception, callers must not catch and suppress
-        database errors inside a nested ``transaction()`` block.
+        rather than committing early, and all ``LedgerDB`` DML write methods compose
+        safely inside ``transaction()`` (only ``init_schema()`` runs DDL via
+        ``executescript()`` and cannot run inside an active transaction). Because SQLite
+        rolls back the entire outer transaction on an unhandled exception, callers must
+        not catch and suppress database errors inside a nested ``transaction()`` block.
         """
         if self._tx_depth > 0:
             self._tx_depth += 1
@@ -105,6 +107,7 @@ class LedgerDB:
 
     def init_schema(self) -> None:
         """Create all 14 schema tables and indexes if they do not exist."""
+        # executescript() issues an implicit COMMIT for DDL, so this stays on self.conn.
         with self.conn:
             self.conn.executescript(
                 """
@@ -883,7 +886,7 @@ class LedgerDB:
             new_status = (
                 current_status if current_status in {"confirmed", "rejected"} else match.status
             )
-            with self.conn:
+            with self.transaction():
                 self.conn.execute(
                     """
                     UPDATE reconciliation_matches
@@ -902,7 +905,7 @@ class LedgerDB:
                 )
             return match_id
 
-        with self.conn:
+        with self.transaction():
             cur = self.conn.execute(
                 """
                 INSERT INTO reconciliation_matches (
@@ -974,7 +977,7 @@ class LedgerDB:
 
     def set_match_status(self, match_id: int, status: str) -> bool:
         """Update status ('proposed', 'confirmed', 'rejected') for a match."""
-        with self.conn:
+        with self.transaction():
             cur = self.conn.execute(
                 "UPDATE reconciliation_matches SET status = ?, updated_at = ? WHERE id = ?",
                 (status, utc_now_iso(), match_id),
@@ -988,7 +991,7 @@ class LedgerDB:
     def upsert_wave_accounts(self, accounts: list[WaveAccount]) -> int:
         """Replace/upsert cached Wave chart of accounts."""
         now = utc_now_iso()
-        with self.conn:
+        with self.transaction():
             for acc in accounts:
                 self.conn.execute(
                     """
@@ -1021,7 +1024,7 @@ class LedgerDB:
     def upsert_wave_customers(self, customers: list[WaveCustomer]) -> int:
         """Upsert cached Wave customers."""
         now = utc_now_iso()
-        with self.conn:
+        with self.transaction():
             for cust in customers:
                 self.conn.execute(
                     """
@@ -1039,7 +1042,7 @@ class LedgerDB:
     def upsert_wave_products(self, products: list[WaveProduct]) -> int:
         """Upsert cached Wave products."""
         now = utc_now_iso()
-        with self.conn:
+        with self.transaction():
             for prod in products:
                 self.conn.execute(
                     """
@@ -1150,7 +1153,7 @@ class LedgerDB:
             if existing_rule == "manual_recategorize" and existing_status in {"staged", "approved"}:
                 return existing_id
 
-            with self.conn:
+            with self.transaction():
                 self.conn.execute(
                     """
                     UPDATE staged_transactions
@@ -1180,7 +1183,7 @@ class LedgerDB:
                 )
             return existing_id
 
-        with self.conn:
+        with self.transaction():
             cur = self.conn.execute(
                 """
                 INSERT INTO staged_transactions (
@@ -1226,7 +1229,7 @@ class LedgerDB:
             existing_id = int(existing["id"])
             if str(existing["status"]) in {"pushed", "skipped"}:
                 return existing_id
-            with self.conn:
+            with self.transaction():
                 self.conn.execute(
                     """
                     UPDATE staged_invoices
@@ -1253,7 +1256,7 @@ class LedgerDB:
                 )
             return existing_id
 
-        with self.conn:
+        with self.transaction():
             cur = self.conn.execute(
                 """
                 INSERT INTO staged_invoices (
@@ -1365,7 +1368,7 @@ class LedgerDB:
 
     def delete_unpushed_staged_invoices(self) -> int:
         """Delete unpushed staged invoices when invoice mirroring is disabled."""
-        with self.conn:
+        with self.transaction():
             cur = self.conn.execute("DELETE FROM staged_invoices WHERE status != 'pushed'")
             return int(cur.rowcount)
 
@@ -1386,7 +1389,7 @@ class LedgerDB:
         now = utc_now_iso()
         tx_count = 0
         inv_count = 0
-        with self.conn:
+        with self.transaction():
             if all_staged:
                 cur = self.conn.execute(
                     """
@@ -1459,7 +1462,7 @@ class LedgerDB:
         )
         new_notes = f"{tx.notes}; {note}".strip("; ") if note else tx.notes
         now = utc_now_iso()
-        with self.conn:
+        with self.transaction():
             self.conn.execute(
                 """
                 UPDATE staged_transactions
@@ -1476,7 +1479,7 @@ class LedgerDB:
     def mark_staged_pushed(self, kind: str, staged_id: int, wave_id: str) -> None:
         """Mark a staged invoice or transaction as pushed with its remote Wave ID."""
         now = utc_now_iso()
-        with self.conn:
+        with self.transaction():
             if kind == "transaction":
                 self.conn.execute(
                     """
@@ -1502,7 +1505,7 @@ class LedgerDB:
     def mark_staged_failed(self, kind: str, staged_id: int, error: str) -> None:
         """Mark a staged invoice or transaction as failed with an error message."""
         now = utc_now_iso()
-        with self.conn:
+        with self.transaction():
             if kind == "transaction":
                 self.conn.execute(
                     """

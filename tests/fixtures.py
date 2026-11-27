@@ -663,9 +663,9 @@ def build_ofx_xml(section: str, acct_from: str, acct_id: str, entries: list[OfxE
 """
 
 
-# The e2e workflow data below mirrors SAMPLE_GRASSHOPPER_CSV (same dates, descriptions, amounts,
-# directions and card last-4), expressed as OFX so the e2e test does not depend on the CSV
-# merchant categories are dropped because OFX does not carry them.
+# E2E workflow data as OFX: one Grasshopper checking account (ACCTID 9012) and two Capital One
+# cards (ACCTID 1234 and 4321). TRNTYPE is DEBIT or CREDIT, as in a real bank file, so no merchant
+# category is available to rules.
 E2E_GRASSHOPPER_OFX = build_ofx_xml(
     "BANK",
     "BANKACCTFROM",

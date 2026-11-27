@@ -6,7 +6,7 @@ import argparse
 import json
 import shutil
 import sys
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -483,8 +483,34 @@ def _cmd_wave_sync_meta(args: argparse.Namespace) -> int:
     return 0
 
 
+def _ingest_inbox_files(
+    source_label: str,
+    files: Sequence[Path],
+    ingest_fn: Callable[[Path], tuple[int, int]],
+    failures: list[tuple[Path, str]],
+    *,
+    per_file_prefix: str | None = None,
+) -> tuple[int, int, int]:
+    """Ingest inbox files individually, recording ValueError failures without aborting."""
+    succeeded = total_r = total_i = 0
+    for f in files:
+        try:
+            r, ins = ingest_fn(f)
+        except ValueError as exc:
+            print(f"Error ingesting {source_label} ({f.name}): {exc}", file=sys.stderr)
+            failures.append((f, str(exc)))
+            continue
+        succeeded += 1
+        total_r += r
+        total_i += ins
+        if per_file_prefix is not None:
+            print(f"{per_file_prefix} ({f.name}): read {r}, inserted {ins}.")
+    return succeeded, total_r, total_i
+
+
 def _cmd_ingest(args: argparse.Namespace) -> int:
     cfg, db = _open_context(Path(args.config))
+    failures: list[tuple[Path, str]] = []
     with db:
         target = args.ingest_target
         if target == "harvest":
@@ -519,34 +545,40 @@ def _cmd_ingest(args: argparse.Namespace) -> int:
                 files = _inbox_files(
                     cfg.general.inbox_dir, "grasshopper", (".csv", ".ofx", ".qfx", ".qbo")
                 )
-                total_r = total_i = 0
-                for f in files:
-                    r, ins = _ingest_grasshopper_file(
+                succeeded, total_r, total_i = _ingest_inbox_files(
+                    "Grasshopper",
+                    files,
+                    lambda f: _ingest_grasshopper_file(
                         db, cfg, f, account_key_override=acct_override
-                    )
-                    total_r += r
-                    total_i += ins
+                    ),
+                    failures,
+                )
                 print(
-                    f"Grasshopper inbox: {len(files)} file(s), read {total_r}, inserted {total_i}."
+                    f"Grasshopper inbox: {succeeded} file(s), read {total_r}, inserted {total_i}."
                 )
 
         elif target == "capital-one":
-            files = (
-                [Path(args.file)]
-                if args.file
-                else _inbox_files(
+            if args.file:
+                succeeded = 1
+                total_r, total_i = _ingest_capital_one_file(
+                    db, Path(args.file), expected_currency=cfg.general.currency
+                )
+            else:
+                files = _inbox_files(
                     cfg.general.inbox_dir,
                     "capital_one",
                     (".csv", ".pdf", ".ofx", ".qfx", ".qbo"),
                 )
-            )
-            total_r = total_i = 0
-            for f in files:
-                r, ins = _ingest_capital_one_file(db, f, expected_currency=cfg.general.currency)
-                total_r += r
-                total_i += ins
+                succeeded, total_r, total_i = _ingest_inbox_files(
+                    "Capital One",
+                    files,
+                    lambda f: _ingest_capital_one_file(
+                        db, f, expected_currency=cfg.general.currency
+                    ),
+                    failures,
+                )
             print(
-                f"Capital One: {len(files)} file(s), read {total_r}, inserted {total_i} new tx(s)."
+                f"Capital One: {succeeded} file(s), read {total_r}, inserted {total_i} new tx(s)."
             )
 
         elif target == "gusto":
@@ -579,21 +611,39 @@ def _cmd_ingest(args: argparse.Namespace) -> int:
             if has_gh_api:
                 r, ins = _ingest_grasshopper_api(db, cfg, None, None)
                 print(f"Grasshopper API: read {r}, inserted {ins}.")
-            for f in _inbox_files(
-                cfg.general.inbox_dir, "grasshopper", (".csv", ".ofx", ".qfx", ".qbo")
-            ):
-                r, ins = _ingest_grasshopper_file(db, cfg, f)
-                print(f"Grasshopper file ({f.name}): read {r}, inserted {ins}.")
+            _ingest_inbox_files(
+                "Grasshopper",
+                _inbox_files(
+                    cfg.general.inbox_dir, "grasshopper", (".csv", ".ofx", ".qfx", ".qbo")
+                ),
+                lambda f: _ingest_grasshopper_file(db, cfg, f),
+                failures,
+                per_file_prefix="Grasshopper file",
+            )
 
-            for f in _inbox_files(
-                cfg.general.inbox_dir, "capital_one", (".csv", ".pdf", ".ofx", ".qfx", ".qbo")
-            ):
-                r, ins = _ingest_capital_one_file(db, f, expected_currency=cfg.general.currency)
-                print(f"Capital One ({f.name}): read {r}, inserted {ins}.")
+            _ingest_inbox_files(
+                "Capital One",
+                _inbox_files(
+                    cfg.general.inbox_dir,
+                    "capital_one",
+                    (".csv", ".pdf", ".ofx", ".qfx", ".qbo"),
+                ),
+                lambda f: _ingest_capital_one_file(db, f, expected_currency=cfg.general.currency),
+                failures,
+                per_file_prefix="Capital One",
+            )
 
             for f in _inbox_files(cfg.general.inbox_dir, "gusto", (".csv",)):
                 r, ins = _ingest_gusto_file(db, cfg, f, "regular")
                 print(f"Gusto ({f.name}): read {r}, inserted {ins} run(s).")
+
+    if failures:
+        names = ", ".join(path.name for path, _ in failures)
+        print(
+            f"Ingest completed with {len(failures)} failed file(s): {names}",
+            file=sys.stderr,
+        )
+        return 2
     return 0
 
 

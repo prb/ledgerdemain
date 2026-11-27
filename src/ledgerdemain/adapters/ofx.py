@@ -15,9 +15,23 @@ from ledgerdemain.models import BankTransaction
 from ledgerdemain.money import ZERO, Money, parse_money
 
 _STMTTRN_RE = re.compile(
-    r"<STMTTRN(?:\s[^>]*)?>(.*?)"
-    r"(?:</STMTTRN\s*>|(?=<STMTTRN(?:\s[^>]*)?>|</BANKTRANLIST\s*>|<LEDGERBAL\b|<AVAILBAL\b|</STMTRS\s*>|</CCSTMTRS\s*>|</OFX\s*>|$))",
-    re.DOTALL | re.IGNORECASE,
+    r"""
+    <STMTTRN(?:\s[^>]*)?>(.*?)
+    (?:
+        </STMTTRN\s*>
+        | (?=
+            <STMTTRN(?:\s[^>]*)?>
+            | </BANKTRANLIST\s*>
+            | <LEDGERBAL\b
+            | <AVAILBAL\b
+            | </STMTRS\s*>
+            | </CCSTMTRS\s*>
+            | </OFX\s*>
+            | $
+        )
+    )
+    """,
+    re.DOTALL | re.IGNORECASE | re.VERBOSE,
 )
 _STMTTRN_OPEN_RE = re.compile(r"<STMTTRN(?:\s[^>]*)?/?>", re.IGNORECASE)
 _TAG_RE = re.compile(r"<([A-Za-z0-9_]+)>\s*([^<\r\n]+)", re.IGNORECASE)

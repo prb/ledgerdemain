@@ -807,6 +807,111 @@ acctid_last4 = "2222"
     assert "currency mismatch" in err_buf2.getvalue()
 
 
+def _run_cli_main(cfg_path: Path, argv: list[str]) -> tuple[int, str, str]:
+    out_buf = io.StringIO()
+    err_buf = io.StringIO()
+    with contextlib.redirect_stdout(out_buf), contextlib.redirect_stderr(err_buf):
+        code = main(["--config", str(cfg_path), *argv])
+    return code, out_buf.getvalue(), err_buf.getvalue()
+
+
+def test_cli_capital_one_inbox_continues_after_corrupt_ofx(tmp_path: Path) -> None:
+    cfg = make_test_config(tmp_path, include_api_creds=False)
+    cfg_path = cfg.config_dir / "ledgerdemain.toml"
+    co_inbox = cfg.general.inbox_dir / "capital_one"
+    co_inbox.mkdir(parents=True, exist_ok=True)
+
+    corrupt_ofx = co_inbox / "01_corrupt.ofx"
+    corrupt_ofx.write_text(
+        SAMPLE_CAPITAL_ONE_OFX_XML.split("</BANKTRANLIST>")[0],
+        encoding="utf-8",
+    )
+    (co_inbox / "02_valid.ofx").write_text(SAMPLE_CAPITAL_ONE_OFX_XML, encoding="utf-8")
+
+    code, out, err = _run_cli_main(cfg_path, ["ingest", "capital-one"])
+    assert code == 2
+    assert "Error ingesting Capital One (01_corrupt.ofx):" in err
+    assert "Ingest completed with 1 failed file(s): 01_corrupt.ofx" in err
+    assert "Capital One: 1 file(s), read 2, inserted 2 new tx(s)." in out
+
+    with LedgerDB(cfg.general.db_path) as db:
+        txs = db.list_bank_transactions(source="capital_one")
+    assert {tx.external_id for tx in txs} == {"FIT-C1-001", "FIT-C1-002"}
+
+    code_single, _, err_single = _run_cli_main(
+        cfg_path, ["ingest", "capital-one", "--file", str(corrupt_ofx)]
+    )
+    assert code_single == 2
+    assert "Error:" in err_single
+    assert "Ingest completed with" not in err_single
+
+
+def test_cli_grasshopper_inbox_continues_after_corrupt_ofx(tmp_path: Path) -> None:
+    cfg = make_test_config(tmp_path, include_api_creds=False)
+    cfg_path = cfg.config_dir / "ledgerdemain.toml"
+    gh_inbox = cfg.general.inbox_dir / "grasshopper"
+    gh_inbox.mkdir(parents=True, exist_ok=True)
+
+    corrupt_ofx = gh_inbox / "01_corrupt.ofx"
+    corrupt_ofx.write_text(
+        SAMPLE_OFX_SGML.split("</BANKTRANLIST>")[0],
+        encoding="utf-8",
+    )
+    (gh_inbox / "02_valid.ofx").write_text(SAMPLE_OFX_SGML, encoding="utf-8")
+
+    code, out, err = _run_cli_main(cfg_path, ["ingest", "grasshopper", "--inbox"])
+    assert code == 2
+    assert "Error ingesting Grasshopper (01_corrupt.ofx):" in err
+    assert "Ingest completed with 1 failed file(s): 01_corrupt.ofx" in err
+    assert "Grasshopper inbox: 1 file(s), read 2, inserted 2." in out
+
+    with LedgerDB(cfg.general.db_path) as db:
+        txs = db.list_bank_transactions(source="grasshopper")
+    assert {tx.external_id for tx in txs} == {"OFX-GH-1", "OFX-GH-2"}
+
+    code_single, _, err_single = _run_cli_main(
+        cfg_path, ["ingest", "grasshopper", "--file", str(corrupt_ofx)]
+    )
+    assert code_single == 2
+    assert "Error:" in err_single
+    assert "Ingest completed with" not in err_single
+
+
+def test_cli_ingest_all_continues_across_corrupt_inbox_ofx(tmp_path: Path) -> None:
+    cfg = make_test_config(tmp_path, include_api_creds=False)
+    cfg_path = cfg.config_dir / "ledgerdemain.toml"
+    gh_inbox = cfg.general.inbox_dir / "grasshopper"
+    co_inbox = cfg.general.inbox_dir / "capital_one"
+    gh_inbox.mkdir(parents=True, exist_ok=True)
+    co_inbox.mkdir(parents=True, exist_ok=True)
+
+    (gh_inbox / "01_bad_gh.ofx").write_text(
+        SAMPLE_OFX_SGML.split("</BANKTRANLIST>")[0],
+        encoding="utf-8",
+    )
+    (gh_inbox / "02_good_gh.ofx").write_text(SAMPLE_OFX_SGML, encoding="utf-8")
+
+    (co_inbox / "01_bad_co.ofx").write_text(
+        SAMPLE_CAPITAL_ONE_OFX_XML.split("</BANKTRANLIST>")[0],
+        encoding="utf-8",
+    )
+    (co_inbox / "02_good_co.ofx").write_text(SAMPLE_CAPITAL_ONE_OFX_XML, encoding="utf-8")
+
+    code, out, err = _run_cli_main(cfg_path, ["ingest", "all"])
+    assert code == 2
+    assert "Error ingesting Grasshopper (01_bad_gh.ofx):" in err
+    assert "Error ingesting Capital One (01_bad_co.ofx):" in err
+    assert "Ingest completed with 2 failed file(s): 01_bad_gh.ofx, 01_bad_co.ofx" in err
+    assert "Grasshopper file (02_good_gh.ofx): read 2, inserted 2." in out
+    assert "Capital One (02_good_co.ofx): read 2, inserted 2." in out
+
+    with LedgerDB(cfg.general.db_path) as db:
+        gh_txs = db.list_bank_transactions(source="grasshopper")
+        co_txs = db.list_bank_transactions(source="capital_one")
+    assert {tx.external_id for tx in gh_txs} == {"OFX-GH-1", "OFX-GH-2"}
+    assert {tx.external_id for tx in co_txs} == {"FIT-C1-001", "FIT-C1-002"}
+
+
 def test_gusto_payroll_journal_multi_section_and_scorp_imputed_benefits(tmp_path: Path) -> None:
     cols = [
         "Last Name",

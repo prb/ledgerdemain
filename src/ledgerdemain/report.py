@@ -203,7 +203,7 @@ def build_report(
             "reason": stx.last_error or stx.review_reason,
         }
         for stx in staged_txs
-        if stx.status in {"needs_review", "failed"}
+        if stx.status in {"needs_review", "failed", "outcome_unknown"}
     ]
 
     return {

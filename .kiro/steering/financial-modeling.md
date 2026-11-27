@@ -52,10 +52,9 @@ validating monetary amounts and accounting transactions in Ledgerdemain.
   no currency symbols or thousands separators) for SQLite persistence, JSON payloads,
   Wave GraphQL inputs, and deterministic SHA-256 fingerprints (`make_bank_fingerprint`
   and `GustoPayrollCsvAdapter._run_fingerprint` in `adapters/gusto.py`).
-  `Money.format_comma()` is available strictly for optional human-readable display
-  (current CLI and report output uses `format_money`) and must never be used for
-  persistence, APIs, or fingerprints. Preserve canonical formatting so re-ingesting
-  overlapping exports remains idempotent.
+  Do not add thousands separators or currency symbols to any of these outputs
+  (CLI and report output also use `format_money`). Preserve canonical formatting so
+  re-ingesting overlapping exports remains idempotent.
 - **Verify financial invariants with property-based tests.** Cover parsing roundtrips,
   fixed-point algebra, rational scaling, double-entry balance checks, payroll clearing
   identities, and fingerprint determinism with Hypothesis tests in

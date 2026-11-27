@@ -2,12 +2,16 @@
 
 from __future__ import annotations
 
+import http.client
 from pathlib import Path
+from typing import Any
+
+import pytest
 
 from ledgerdemain.categorize import Categorizer
 from ledgerdemain.config import load_rules
 from ledgerdemain.db import LedgerDB
-from ledgerdemain.http_client import HttpClient
+from ledgerdemain.http_client import HttpClient, HttpResponse
 from ledgerdemain.models import BankTransaction, HarvestInvoice
 from ledgerdemain.money import ZERO, Money
 from ledgerdemain.planner import Planner
@@ -159,3 +163,190 @@ def test_wave_input_errors_and_classic_accounting_warning(tmp_path: Path) -> Non
         failed = db.list_staged_transactions(status="failed")
         assert len(failed) == 1
         assert "Simulated Wave validation failure" in (failed[0].last_error or "")
+
+
+class _LossyWaveTransport:
+    """Mock Wave transport where one mutation is applied but its response is then lost."""
+
+    def __init__(self, inner: MockWaveTransport, fail_op: str, failure: Exception | int) -> None:
+        self.inner = inner
+        self.fail_op = fail_op
+        self.failure = failure
+        self.failed = False
+
+    def request(
+        self,
+        method: str,
+        url: str,
+        headers: dict[str, str] | None = None,
+        body: bytes | None = None,
+        timeout: float = 30.0,
+    ) -> HttpResponse:
+        resp = self.inner.request(method, url, headers, body, timeout)
+        if not self.failed and self.fail_op in self.inner.calls[-1]["query"]:
+            self.failed = True
+            if isinstance(self.failure, Exception):
+                raise self.failure
+            return HttpResponse(status=self.failure, headers={}, body=b"gateway timeout")
+        return resp
+
+
+def _op_calls(transport: MockWaveTransport, op: str) -> list[dict[str, Any]]:
+    return [c for c in transport.calls if op in c["query"]]
+
+
+def _lossy_service(
+    tmp_path: Path, db: LedgerDB, fail_op: str, failure: Exception | int
+) -> tuple[WaveSyncService, MockWaveTransport]:
+    cfg = make_test_config(tmp_path)
+    inner = MockWaveTransport()
+    http = HttpClient(
+        transport=_LossyWaveTransport(inner, fail_op, failure), sleep_fn=lambda _: None
+    )
+    _setup_staged_db(tmp_path, db)
+    svc = WaveSyncService(
+        db, cfg, WaveGraphQLClient(cfg.wave.endpoint, cfg.wave.access_token, http)
+    )
+    svc.sync_metadata()
+    return svc, inner
+
+
+@pytest.mark.parametrize("failure", [TimeoutError("read timed out"), 504])
+def test_invoice_create_with_unknown_outcome_is_not_resent(
+    tmp_path: Path, failure: Exception | int
+) -> None:
+    cfg = make_test_config(tmp_path)
+    with LedgerDB(cfg.general.db_path) as db:
+        svc, wave = _lossy_service(tmp_path, db, "InvoiceCreate", failure)
+
+        first = svc.push(dry_run=False)
+
+        # Wave applied the invoice once; the client didn't retry and the push stopped.
+        assert len(_op_calls(wave, "InvoiceCreate")) == 1
+        assert len(wave.invoices) == 1
+        assert _op_calls(wave, "MoneyTransactionCreate") == []
+        assert first.invoices_failed == 1
+        assert first.invoices_pushed == 0
+        assert any(e.startswith("Push stopped") for e in first.errors)
+        failed = db.list_staged_invoices(status="outcome_unknown")
+        assert len(failed) == 1
+        lost_number = failed[0].invoice_number
+        assert "Outcome unknown" in (failed[0].last_error or "")
+
+        # The next push sends the rest but never re-creates the unknown-outcome invoice.
+        second = svc.push(dry_run=False)
+        assert second.errors == []
+        assert second.invoices_pushed == 1
+        assert second.transactions_pushed == 2
+        sent_numbers = [
+            c["variables"]["input"]["invoiceNumber"] for c in _op_calls(wave, "InvoiceCreate")
+        ]
+        assert sent_numbers.count(lost_number) == 1
+
+
+@pytest.mark.parametrize("failure", [http.client.IncompleteRead(b"{"), 502])
+def test_money_transaction_create_with_unknown_outcome_stops_push(
+    tmp_path: Path, failure: Exception | int
+) -> None:
+    cfg = make_test_config(tmp_path)
+    with LedgerDB(cfg.general.db_path) as db:
+        svc, wave = _lossy_service(tmp_path, db, "MoneyTransactionCreate", failure)
+
+        res = svc.push(dry_run=False, transactions_only=True)
+
+        assert len(_op_calls(wave, "MoneyTransactionCreate")) == 1
+        assert res.transactions_failed == 1
+        assert res.transactions_pushed == 0
+        assert any(e.startswith("Push stopped") for e in res.errors)
+        failed = db.list_staged_transactions(status="outcome_unknown")
+        assert len(failed) == 1
+        assert "Outcome unknown" in (failed[0].last_error or "")
+        assert failed[0].external_id in (failed[0].last_error or "")
+        # The other approved transaction was not sent and is still approved.
+        assert len(db.list_staged_transactions(status="approved")) == 1
+
+
+def test_customer_create_with_unknown_outcome_is_reused_after_sync_meta(tmp_path: Path) -> None:
+    cfg = make_test_config(tmp_path)
+    with LedgerDB(cfg.general.db_path) as db:
+        svc, wave = _lossy_service(tmp_path, db, "CustomerCreate", TimeoutError("timed out"))
+
+        first = svc.push(dry_run=False, invoices_only=True)
+        assert any("sync-meta" in e for e in first.errors)
+        assert len(_op_calls(wave, "CustomerCreate")) == 1
+        # The invoice needing the new customer was not sent and stays approved.
+        assert [i.customer_name for i in db.list_staged_invoices(status="approved")] == [
+            "New Client LLC"
+        ]
+
+        svc.sync_metadata()
+        second = svc.push(dry_run=False, invoices_only=True)
+
+        assert second.errors == []
+        assert second.invoices_pushed == 1
+        assert len(_op_calls(wave, "CustomerCreate")) == 1
+        new_client = next(c for c in wave.customers if c["name"] == "New Client LLC")
+        assert wave.invoices[-1]["customer"]["id"] == new_client["id"]
+
+
+def _replan_and_approve(tmp_path: Path, db: LedgerDB) -> None:
+    cfg = make_test_config(tmp_path)
+    Planner(db, cfg, Categorizer(load_rules(cfg.general.rules_path))).build_plan()
+    db.approve_staged(all_staged=True)
+
+
+def test_replan_and_approve_all_do_not_resend_unknown_outcome_transaction(tmp_path: Path) -> None:
+    cfg = make_test_config(tmp_path)
+    with LedgerDB(cfg.general.db_path) as db:
+        svc, wave = _lossy_service(
+            tmp_path, db, "MoneyTransactionCreate", http.client.IncompleteRead(b"{")
+        )
+        svc.push(dry_run=False, transactions_only=True)
+        [unknown] = db.list_staged_transactions(status="outcome_unknown")
+        assert unknown.id is not None
+
+        # The routine plan -> approve --all-staged -> push cycle must not revive it.
+        _replan_and_approve(tmp_path, db)
+        second = svc.push(dry_run=False, transactions_only=True)
+
+        assert second.errors == []
+        sent = [
+            c["variables"]["input"]["externalId"] for c in _op_calls(wave, "MoneyTransactionCreate")
+        ]
+        assert sent.count(unknown.external_id) == 1
+        assert len(set(sent)) == len(sent) == 2
+        still = db.get_staged_transaction(unknown.id)
+        assert still is not None and still.status == "outcome_unknown"
+
+        # Recategorizing can't reset it either; only an explicit approve re-queues it.
+        with pytest.raises(ValueError, match="outcome unknown"):
+            db.recategorize_staged_tx(unknown.id, "meals", "INCREASE")
+        assert db.approve_staged(tx_ids=[unknown.id]) == (1, 0)
+
+
+def test_replan_and_approve_all_do_not_resend_unknown_outcome_invoice(tmp_path: Path) -> None:
+    cfg = make_test_config(tmp_path)
+    with LedgerDB(cfg.general.db_path) as db:
+        svc, wave = _lossy_service(tmp_path, db, "InvoiceCreate", 504)
+        svc.push(dry_run=False, invoices_only=True)
+        [unknown] = db.list_staged_invoices(status="outcome_unknown")
+
+        _replan_and_approve(tmp_path, db)
+        svc.push(dry_run=False, invoices_only=True)
+
+        sent = [c["variables"]["input"]["invoiceNumber"] for c in _op_calls(wave, "InvoiceCreate")]
+        assert sent.count(unknown.invoice_number) == 1
+        assert len(db.list_staged_invoices(status="outcome_unknown")) == 1
+
+
+def test_rejected_create_stops_push_without_marking_records(tmp_path: Path) -> None:
+    cfg = make_test_config(tmp_path)
+    with LedgerDB(cfg.general.db_path) as db:
+        svc, wave = _lossy_service(tmp_path, db, "MoneyTransactionCreate", 401)
+        res = svc.push(dry_run=False, transactions_only=True)
+
+        assert any(e.startswith("Push stopped: Wave rejected") for e in res.errors)
+        assert len(_op_calls(wave, "MoneyTransactionCreate")) == 1
+        assert db.list_staged_transactions(status="outcome_unknown") == []
+        assert db.list_staged_transactions(status="failed") == []
+        assert len(db.list_staged_transactions(status="approved")) == 2

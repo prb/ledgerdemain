@@ -42,6 +42,7 @@ class OutcomeUnknownError(HttpError):
 
     A lost connection, timeout, truncated response or 5xx can arrive after the server has
     committed the request, so the caller must check the remote state before sending it again.
+    A 2xx response whose body cannot be used as an answer raises it too.
     """
 
 
@@ -100,6 +101,12 @@ def _get_header_ci(headers: dict[str, str], name: str) -> str | None:
         if key.lower() == target:
             return val
     return None
+
+
+def _unusable_response(status: int, reason: str) -> OutcomeUnknownError:
+    return OutcomeUnknownError(
+        status, f"The response could not be used ({reason}); the request may have been applied"
+    )
 
 
 class HttpClient:
@@ -195,7 +202,11 @@ class HttpClient:
         *,
         idempotent: bool = True,
     ) -> Any:
-        """Send an HTTP request and decode a JSON response."""
+        """Send an HTTP request and decode a JSON response.
+
+        An empty body returns ``{}``. With ``idempotent=False`` an empty or undecodable 2xx body
+        raises ``OutcomeUnknownError`` instead, because the request may have been applied.
+        """
         full_url = url
         if params:
             filtered = {k: str(v) for k, v in params.items() if v is not None}
@@ -218,8 +229,17 @@ class HttpClient:
             idempotent=idempotent,
         )
         if not resp.body:
+            if not idempotent:
+                raise _unusable_response(resp.status, "the response body was empty")
             return {}
-        return json.loads(resp.body.decode("utf-8"))
+        try:
+            return json.loads(resp.body.decode("utf-8"))
+        except ValueError as exc:  # JSONDecodeError and UnicodeDecodeError
+            if not idempotent:
+                raise _unusable_response(
+                    resp.status, "the response body was not valid JSON"
+                ) from exc
+            raise
 
     def post_graphql(
         self,
@@ -244,9 +264,18 @@ class HttpClient:
             "POST", endpoint, headers=headers, json_body=payload, idempotent=idempotent
         )
         if not isinstance(result, dict):
+            if not idempotent:
+                raise _unusable_response(200, f"a {type(result).__name__} is not a GraphQL result")
             raise HttpError(500, f"Unexpected GraphQL response shape: {type(result).__name__}")
         errors = result.get("errors")
         if errors:
             raise GraphQLError(errors)
         data = result.get("data")
+        if not idempotent and not isinstance(data, dict):
+            raise _unusable_response(
+                200,
+                "it has neither data nor errors"
+                if data is None
+                else f"its data is a {type(data).__name__}, not an object",
+            )
         return data if isinstance(data, dict) else {}

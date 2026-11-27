@@ -17,7 +17,8 @@ from ledgerdemain.http_client import HttpClient, HttpResponse
 from tests.fixtures import (
     E2E_CAPITAL_ONE_JAN_OFX,
     E2E_CAPITAL_ONE_STATEMENT_OFX,
-    E2E_GRASSHOPPER_OFX,
+    E2E_GRASSHOPPER_ACCOUNT_ID,
+    E2E_GRASSHOPPER_TRANSACTIONS,
     E2E_HARVEST_CLIENTS,
     E2E_HARVEST_INVOICES,
     E2E_HARVEST_PAYMENTS,
@@ -39,10 +40,7 @@ def _run_cli(cfg_path: Path, argv: list[str]) -> tuple[int, str, str]:
 def _mock_api_handler(
     method: str, url: str, headers: dict[str, str], body: bytes | None
 ) -> HttpResponse:
-    """Serve Harvest from fixtures and an empty Grasshopper API; 404 on any other request.
-
-    Grasshopper data comes from OFX, so its API has no transactions.
-    """
+    """Serve Harvest and Grasshopper checking from fixtures; 404 on any other request."""
     del method, headers, body
     parsed = urllib.parse.urlparse(url)
     path = parsed.path
@@ -57,10 +55,10 @@ def _mock_api_handler(
             payload = E2E_HARVEST_PAYMENTS.get(
                 int(payments.group(1)), {"invoice_payments": [], "next_page": None}
             )
-    elif parsed.netloc == "api.grasshopper.bank" and re.fullmatch(
-        r"/v1/accounts/[^/]+/transactions", path
+    elif parsed.netloc == "api.grasshopper.bank" and path == (
+        f"/v1/accounts/{E2E_GRASSHOPPER_ACCOUNT_ID}/transactions"
     ):
-        payload = {"transactions": []}
+        payload = E2E_GRASSHOPPER_TRANSACTIONS
     if payload is None:
         return HttpResponse(404, {}, b"{}")
     return HttpResponse(200, {}, json.dumps(payload).encode("utf-8"))
@@ -99,8 +97,8 @@ def test_full_offline_cli_workflow(tmp_path: Path, monkeypatch: pytest.MonkeyPat
     # The config also carries Wave credentials; make sure nothing in this test can reach Wave.
     monkeypatch.setattr("ledgerdemain.wave.client.HttpClient", no_wave_http_client)
 
-    # Drop OFX and Gusto CSV files into the inbox (Harvest comes from the mocked API)
-    (tmp_path / "inbox/grasshopper/checking.ofx").write_text(E2E_GRASSHOPPER_OFX, encoding="utf-8")
+    # Drop Capital One OFX and Gusto CSV files into the inbox (Harvest and Grasshopper come from
+    # the mocked APIs)
     (tmp_path / "inbox/capital_one/jan.ofx").write_text(E2E_CAPITAL_ONE_JAN_OFX, encoding="utf-8")
     (tmp_path / "inbox/capital_one/dec_jan_statement.ofx").write_text(
         E2E_CAPITAL_ONE_STATEMENT_OFX, encoding="utf-8"

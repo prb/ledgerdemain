@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import http.client
+import json
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -168,7 +170,9 @@ def test_wave_input_errors_and_classic_accounting_warning(tmp_path: Path) -> Non
 class _LossyWaveTransport:
     """Mock Wave transport where one mutation is applied but its response is then lost."""
 
-    def __init__(self, inner: MockWaveTransport, fail_op: str, failure: Exception | int) -> None:
+    def __init__(
+        self, inner: MockWaveTransport, fail_op: str, failure: Exception | int | bytes
+    ) -> None:
         self.inner = inner
         self.fail_op = fail_op
         self.failure = failure
@@ -187,6 +191,8 @@ class _LossyWaveTransport:
             self.failed = True
             if isinstance(self.failure, Exception):
                 raise self.failure
+            if isinstance(self.failure, bytes):
+                return HttpResponse(status=200, headers={}, body=self.failure)
             return HttpResponse(status=self.failure, headers={}, body=b"gateway timeout")
         return resp
 
@@ -196,7 +202,7 @@ def _op_calls(transport: MockWaveTransport, op: str) -> list[dict[str, Any]]:
 
 
 def _lossy_service(
-    tmp_path: Path, db: LedgerDB, fail_op: str, failure: Exception | int
+    tmp_path: Path, db: LedgerDB, fail_op: str, failure: Exception | int | bytes
 ) -> tuple[WaveSyncService, MockWaveTransport]:
     cfg = make_test_config(tmp_path)
     inner = MockWaveTransport()
@@ -350,3 +356,107 @@ def test_rejected_create_stops_push_without_marking_records(tmp_path: Path) -> N
         assert db.list_staged_transactions(status="outcome_unknown") == []
         assert db.list_staged_transactions(status="failed") == []
         assert len(db.list_staged_transactions(status="approved")) == 2
+
+
+_MUTATION_ENTITIES = {
+    "customerCreate": "customer",
+    "productCreate": "product",
+    "invoiceCreate": "invoice",
+    "moneyTransactionCreate": "transaction",
+}
+
+
+def _every_mutation(result: Callable[[str], dict[str, Any]]) -> bytes:
+    """A body whose result for each create mutation is ``result(entity_name)``."""
+    data = {op: result(entity) for op, entity in _MUTATION_ENTITIES.items()}
+    return json.dumps({"data": data}).encode("utf-8")
+
+
+_UNUSABLE_200_BODIES = [
+    b"",
+    b"not json",
+    b"[]",
+    b"{}",
+    b'{"data": {}}',
+    # The mutation's own result is present but has no success flag, or reports success
+    # without the created entity or its id: Wave may have applied it.
+    _every_mutation(lambda entity: {}),
+    _every_mutation(lambda entity: {"didSucceed": None, "inputErrors": []}),
+    _every_mutation(lambda entity: {"didSucceed": True, "inputErrors": []}),
+    _every_mutation(lambda entity: {"didSucceed": True, entity: None}),
+    _every_mutation(lambda entity: {"didSucceed": True, entity: {}}),
+]
+
+
+@pytest.mark.parametrize("body", _UNUSABLE_200_BODIES)
+def test_unusable_200_on_invoice_create_is_unknown_and_not_resent(
+    tmp_path: Path, body: bytes
+) -> None:
+    cfg = make_test_config(tmp_path)
+    with LedgerDB(cfg.general.db_path) as db:
+        svc, wave = _lossy_service(tmp_path, db, "InvoiceCreate", body)
+
+        first = svc.push(dry_run=False, invoices_only=True)
+
+        assert len(wave.invoices) == 1
+        assert any(e.startswith("Push stopped") for e in first.errors)
+        [unknown] = db.list_staged_invoices(status="outcome_unknown")
+        assert db.list_staged_invoices(status="failed") == []
+
+        _replan_and_approve(tmp_path, db)
+        svc.push(dry_run=False, invoices_only=True)
+
+        sent = [c["variables"]["input"]["invoiceNumber"] for c in _op_calls(wave, "InvoiceCreate")]
+        assert sent.count(unknown.invoice_number) == 1
+        assert len(db.list_staged_invoices(status="outcome_unknown")) == 1
+
+
+@pytest.mark.parametrize("body", _UNUSABLE_200_BODIES)
+def test_unusable_200_on_money_transaction_create_is_unknown_and_not_resent(
+    tmp_path: Path, body: bytes
+) -> None:
+    cfg = make_test_config(tmp_path)
+    with LedgerDB(cfg.general.db_path) as db:
+        svc, wave = _lossy_service(tmp_path, db, "MoneyTransactionCreate", body)
+
+        first = svc.push(dry_run=False, transactions_only=True)
+
+        assert len(_op_calls(wave, "MoneyTransactionCreate")) == 1
+        assert first.transactions_pushed == 0
+        assert any(e.startswith("Push stopped") for e in first.errors)
+        [unknown] = db.list_staged_transactions(status="outcome_unknown")
+        assert db.list_staged_transactions(status="failed") == []
+
+        _replan_and_approve(tmp_path, db)
+        second = svc.push(dry_run=False, transactions_only=True)
+
+        assert second.errors == []
+        sent = [
+            c["variables"]["input"]["externalId"] for c in _op_calls(wave, "MoneyTransactionCreate")
+        ]
+        assert sent.count(unknown.external_id) == 1
+        assert len(wave.transactions) == len(sent) == 2
+
+
+@pytest.mark.parametrize("body", _UNUSABLE_200_BODIES)
+def test_unusable_200_on_customer_create_is_reused_after_sync_meta(
+    tmp_path: Path, body: bytes
+) -> None:
+    cfg = make_test_config(tmp_path)
+    with LedgerDB(cfg.general.db_path) as db:
+        svc, wave = _lossy_service(tmp_path, db, "CustomerCreate", body)
+
+        first = svc.push(dry_run=False, invoices_only=True)
+
+        assert any("sync-meta" in e for e in first.errors)
+        assert len(_op_calls(wave, "CustomerCreate")) == 1
+        assert db.list_staged_invoices(status="outcome_unknown") == []
+        assert db.list_staged_invoices(status="failed") == []
+        assert len(db.list_staged_invoices(status="approved")) == 1
+
+        svc.sync_metadata()
+        second = svc.push(dry_run=False, invoices_only=True)
+
+        assert second.errors == []
+        assert second.invoices_pushed == 1
+        assert len(_op_calls(wave, "CustomerCreate")) == 1

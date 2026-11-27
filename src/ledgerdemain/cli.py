@@ -18,12 +18,12 @@ from ledgerdemain.adapters.ofx import OfxStatement, OfxTransactionParser
 from ledgerdemain.categorize import Categorizer
 from ledgerdemain.config import AppConfig, ConfigError, load_config, load_rules
 from ledgerdemain.db import LedgerDB
-from ledgerdemain.http_client import HttpError
+from ledgerdemain.http_client import GraphQLError, HttpError
 from ledgerdemain.money import format_money
 from ledgerdemain.planner import Planner, validate_double_entry_balance
 from ledgerdemain.reconcile import Reconciler
 from ledgerdemain.report import build_report, format_report_text
-from ledgerdemain.wave.client import WaveGraphQLClient
+from ledgerdemain.wave.client import WaveApiError, WaveGraphQLClient
 from ledgerdemain.wave.sync import WaveSyncService
 
 _DEFAULT_CONFIG_FALLBACK = """[general]
@@ -64,12 +64,10 @@ header_secret_name = "X-API-Secret"
 [[grasshopper.accounts]]
 account_key = "grasshopper_savings"
 account_id = "${GRASSHOPPER_SAVINGS_ACCOUNT_ID}"
-acctid_last4 = "${GRASSHOPPER_SAVINGS_LAST4}"
 
 [[grasshopper.accounts]]
 account_key = "grasshopper_money_market"
 account_id = "${GRASSHOPPER_MM_ACCOUNT_ID}"
-acctid_last4 = "${GRASSHOPPER_MM_LAST4}"
 
 [accounts]
 grasshopper_checking = "Grasshopper Checking"
@@ -193,7 +191,6 @@ def _cmd_init(args: argparse.Namespace) -> int:
     target_dir.mkdir(parents=True, exist_ok=True)
     for sub in (
         "data",
-        "inbox/grasshopper",
         "inbox/capital_one",
         "inbox/gusto",
     ):
@@ -249,15 +246,9 @@ def _ingest_grasshopper_api(
     cfg: AppConfig,
     from_date: str | None,
     to_date: str | None,
-    account_key_filter: str | None = None,
 ) -> tuple[int, int]:
     adapter = GrasshopperApiAdapter(cfg.grasshopper)
-    accounts = [
-        acct
-        for acct in cfg.grasshopper.configured_accounts
-        if acct.account_id
-        and (account_key_filter is None or acct.account_key == account_key_filter)
-    ]
+    accounts = [acct for acct in cfg.grasshopper.configured_accounts if acct.account_id]
     if not accounts:
         raise ConfigError(
             "Grasshopper API requires grasshopper.account_id or [[grasshopper.accounts]] "
@@ -291,76 +282,14 @@ def _ingest_grasshopper_api(
     return total_read, total_inserted
 
 
-def _print_ofx_summary(path: Path, stmt: OfxStatement, account_key: str = "") -> None:
+def _print_ofx_summary(path: Path, stmt: OfxStatement) -> None:
     date_range = f"{stmt.start_date or '?'}..{stmt.end_date or '?'}"
-    acct_tag = f" [{account_key}]" if account_key else ""
     bal = (
         f" | ledger_bal=${format_money(stmt.ledger_balance)}"
         if stmt.ledger_balance is not None
         else ""
     )
-    print(f"  OFX ({path.name}){acct_tag}: {date_range}{bal}")
-
-
-def _ingest_grasshopper_file(
-    db: LedgerDB,
-    cfg: AppConfig,
-    path: Path,
-    account_key_override: str | None = None,
-) -> tuple[int, int]:
-    if path.suffix.lower() in {".ofx", ".qfx", ".qbo"}:
-        parser = OfxTransactionParser()
-        if account_key_override:
-            acct_key = account_key_override
-            expected_last4 = next(
-                (
-                    acct.acctid_last4
-                    for acct in cfg.grasshopper.configured_accounts
-                    if acct.account_key == account_key_override and acct.acctid_last4
-                ),
-                None,
-            )
-            stmt = parser.parse_statement_file(
-                path,
-                source="grasshopper",
-                account_key=acct_key,
-                expected_currency=cfg.general.currency,
-                expected_account_last4=expected_last4,
-            )
-        else:
-            probe = parser.parse_statement_file(
-                path,
-                source="grasshopper",
-                account_key="grasshopper_checking",
-                expected_currency=cfg.general.currency,
-            )
-            acct_key = cfg.grasshopper.resolve_account_key(
-                ofx_account_id=probe.account_id, filename=path.name
-            )
-            stmt = (
-                probe
-                if acct_key == "grasshopper_checking"
-                else parser.parse_statement_file(
-                    path,
-                    source="grasshopper",
-                    account_key=acct_key,
-                    expected_currency=cfg.general.currency,
-                )
-            )
-        txs = stmt.transactions
-        _print_ofx_summary(path, stmt, account_key=acct_key)
-    else:
-        raise ValueError(
-            f"Unsupported Grasshopper file type {path.suffix!r} ({path.name}); "
-            "use an OFX, QFX, or QBO export."
-        )
-    return db.ingest_bank_transactions_batch(
-        txs,
-        source="grasshopper",
-        input_kind="ofx",
-        file_path=str(path),
-        file_sha256=sha256_file(path),
-    )
+    print(f"  OFX ({path.name}): {date_range}{bal}")
 
 
 def _ingest_capital_one_file(
@@ -412,8 +341,15 @@ def _ingest_gusto_file(db: LedgerDB, cfg: AppConfig, path: Path, run_type: str) 
     )
 
 
-def _reject_harvest_inbox_file(path: Path) -> tuple[int, int]:
-    raise ValueError(f"Harvest is ingested through the API; remove or move the file ({path.name}).")
+def _api_only_inbox_rejecter(source_label: str) -> Callable[[Path], tuple[int, int]]:
+    """Return an ingester that fails every file left in the inbox of an API-only source."""
+
+    def reject(path: Path) -> tuple[int, int]:
+        raise ValueError(
+            f"{source_label} is ingested through the API; remove or move the file ({path.name})."
+        )
+
+    return reject
 
 
 def _inbox_files(inbox_dir: Path, subdir: str) -> list[Path]:
@@ -531,34 +467,8 @@ def _cmd_ingest(args: argparse.Namespace) -> int:
             print(f"Harvest API: synced {c} client(s), {i} invoice(s), {p} payment(s).")
 
         elif target == "grasshopper":
-            has_gh_api = bool(
-                cfg.grasshopper.access_token
-                and any(a.account_id for a in cfg.grasshopper.configured_accounts)
-            )
-            acct_override = getattr(args, "account_key", None)
-            if args.file:
-                r, ins = _ingest_grasshopper_file(
-                    db, cfg, Path(args.file), account_key_override=acct_override
-                )
-                print(f"Grasshopper file: read {r}, inserted {ins} new transaction(s).")
-            elif args.api or (not args.inbox and has_gh_api):
-                r, ins = _ingest_grasshopper_api(
-                    db, cfg, args.from_date, args.to_date, account_key_filter=acct_override
-                )
-                print(f"Grasshopper API: read {r}, inserted {ins} new transaction(s).")
-            else:
-                files = _inbox_files(cfg.general.inbox_dir, "grasshopper")
-                succeeded, total_r, total_i = _ingest_inbox_files(
-                    "Grasshopper",
-                    files,
-                    lambda f: _ingest_grasshopper_file(
-                        db, cfg, f, account_key_override=acct_override
-                    ),
-                    failures,
-                )
-                print(
-                    f"Grasshopper inbox: {succeeded} file(s), read {total_r}, inserted {total_i}."
-                )
+            r, ins = _ingest_grasshopper_api(db, cfg, args.from_date, args.to_date)
+            print(f"Grasshopper API: read {r}, inserted {ins} new transaction(s).")
 
         elif target == "capital-one":
             if args.file:
@@ -619,9 +529,8 @@ def _cmd_ingest(args: argparse.Namespace) -> int:
             _ingest_inbox_files(
                 "Grasshopper",
                 _inbox_files(cfg.general.inbox_dir, "grasshopper"),
-                lambda f: _ingest_grasshopper_file(db, cfg, f),
+                _api_only_inbox_rejecter("Grasshopper"),
                 failures,
-                per_file_prefix="Grasshopper file",
             )
 
             _ingest_inbox_files(
@@ -644,7 +553,7 @@ def _cmd_ingest(args: argparse.Namespace) -> int:
             _ingest_inbox_files(
                 "Harvest",
                 _inbox_files(cfg.general.inbox_dir, "harvest"),
-                _reject_harvest_inbox_file,
+                _api_only_inbox_rejecter("Harvest"),
                 failures,
             )
     if failures:
@@ -929,16 +838,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_ing_harv.add_argument("--since", help="Incremental updated_since date (YYYY-MM-DD)")
     p_ing_harv.set_defaults(func=_cmd_ingest)
 
-    p_ing_gh = ingest_sub.add_parser(
-        "grasshopper", help="Ingest Grasshopper transactions via API or OFX/QFX/QBO"
-    )
-    p_ing_gh.add_argument("--api", action="store_true", help="Force Grasshopper API sync")
-    p_ing_gh.add_argument("--file", help="Path to Grasshopper OFX/QFX/QBO export")
-    p_ing_gh.add_argument("--inbox", action="store_true", help="Scan inbox/grasshopper/")
-    p_ing_gh.add_argument(
-        "--account-key",
-        help="Logical account key override (e.g. grasshopper_savings, grasshopper_money_market)",
-    )
+    p_ing_gh = ingest_sub.add_parser("grasshopper", help="Ingest Grasshopper transactions via API")
     p_ing_gh.add_argument("--from", dest="from_date", help="Start date (YYYY-MM-DD)")
     p_ing_gh.add_argument("--to", dest="to_date", help="End date (YYYY-MM-DD)")
     p_ing_gh.set_defaults(func=_cmd_ingest)
@@ -1052,6 +952,6 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = parser.parse_args(argv)
     try:
         return int(args.func(args))
-    except (ConfigError, ValueError, KeyError) as exc:
+    except (ConfigError, ValueError, KeyError, HttpError, GraphQLError, WaveApiError) as exc:
         print(f"Error: {exc}", file=sys.stderr)
         return 2

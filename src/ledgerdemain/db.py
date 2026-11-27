@@ -5,6 +5,8 @@ from __future__ import annotations
 import hashlib
 import json
 import sqlite3
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -65,6 +67,7 @@ class LedgerDB:
         self.conn.row_factory = sqlite3.Row
         self.conn.execute("PRAGMA foreign_keys = ON")
         self.conn.execute("PRAGMA journal_mode = WAL")
+        self._tx_depth = 0
 
     def close(self) -> None:
         """Close the database connection."""
@@ -75,6 +78,30 @@ class LedgerDB:
 
     def __exit__(self, *args: Any) -> None:
         self.close()
+
+    @contextmanager
+    def transaction(self) -> Iterator[None]:
+        """Run operations inside an atomic transaction, joining any active outer one.
+
+        Nested ``transaction()`` blocks participate in the outermost SQLite transaction
+        rather than committing early. Because SQLite rolls back the entire outer
+        transaction on an unhandled exception, callers must not catch and suppress
+        database errors inside a nested ``transaction()`` block.
+        """
+        if self._tx_depth > 0:
+            self._tx_depth += 1
+            try:
+                yield
+            finally:
+                self._tx_depth -= 1
+            return
+
+        self._tx_depth = 1
+        try:
+            with self.conn:
+                yield
+        finally:
+            self._tx_depth = 0
 
     def init_schema(self) -> None:
         """Create all 14 schema tables and indexes if they do not exist."""
@@ -298,7 +325,7 @@ class LedgerDB:
 
     def set_sync_cursor(self, source: str, cursor: str) -> None:
         """Persist the latest sync cursor for a source."""
-        with self.conn:
+        with self.transaction():
             self.conn.execute(
                 """
                 INSERT INTO sync_state (source, cursor, updated_at)
@@ -320,7 +347,7 @@ class LedgerDB:
         records_inserted: int = 0,
     ) -> int:
         """Record an ingestion batch audit row and return its batch ID."""
-        with self.conn:
+        with self.transaction():
             cur = self.conn.execute(
                 """
                 INSERT INTO ingestion_batches (
@@ -343,7 +370,7 @@ class LedgerDB:
 
     def update_batch_counts(self, batch_id: int, records_read: int, records_inserted: int) -> None:
         """Update record counts for an existing ingestion batch."""
-        with self.conn:
+        with self.transaction():
             self.conn.execute(
                 """
                 UPDATE ingestion_batches
@@ -352,6 +379,105 @@ class LedgerDB:
                 """,
                 (records_read, records_inserted, batch_id),
             )
+
+    # ------------------------------------------------------------------
+    # Atomic ingestion batches
+    # ------------------------------------------------------------------
+
+    def _ingest_tracked_batch(
+        self,
+        *,
+        source: str,
+        input_kind: str,
+        file_path: str | None,
+        file_sha256: str | None,
+        upsert_fn: Callable[[int], tuple[int, int]],
+        sync_cursor_source: str | None = None,
+        sync_cursor_value: str | None = None,
+    ) -> tuple[int, int]:
+        with self.transaction():
+            batch_id = self.record_ingestion_batch(
+                source=source,
+                input_kind=input_kind,
+                file_path=file_path,
+                file_sha256=file_sha256,
+            )
+            read_cnt, ins_cnt = upsert_fn(batch_id)
+            self.update_batch_counts(batch_id, read_cnt, ins_cnt)
+            if sync_cursor_source and sync_cursor_value:
+                self.set_sync_cursor(sync_cursor_source, sync_cursor_value)
+        return read_cnt, ins_cnt
+
+    def ingest_bank_transactions_batch(
+        self,
+        transactions: list[BankTransaction],
+        *,
+        source: str,
+        input_kind: str,
+        file_path: str | None = None,
+        file_sha256: str | None = None,
+        sync_cursor_source: str | None = None,
+        sync_cursor_value: str | None = None,
+    ) -> tuple[int, int]:
+        """Atomically record a batch, upsert bank transactions, and update counts/cursor."""
+        return self._ingest_tracked_batch(
+            source=source,
+            input_kind=input_kind,
+            file_path=file_path,
+            file_sha256=file_sha256,
+            upsert_fn=lambda batch_id: self.upsert_bank_transactions(
+                transactions, batch_id=batch_id
+            ),
+            sync_cursor_source=sync_cursor_source,
+            sync_cursor_value=sync_cursor_value,
+        )
+
+    def ingest_gusto_payroll_batch(
+        self,
+        runs: list[GustoPayrollRun],
+        *,
+        source: str = "gusto",
+        input_kind: str = "csv",
+        file_path: str | None = None,
+        file_sha256: str | None = None,
+    ) -> tuple[int, int]:
+        """Atomically record a batch, upsert Gusto payroll runs, and update counts."""
+        return self._ingest_tracked_batch(
+            source=source,
+            input_kind=input_kind,
+            file_path=file_path,
+            file_sha256=file_sha256,
+            upsert_fn=lambda batch_id: self.upsert_gusto_payroll_runs(runs, batch_id=batch_id),
+        )
+
+    def ingest_harvest_batch(
+        self,
+        invoices: list[HarvestInvoice],
+        *,
+        input_kind: str,
+        clients: list[HarvestClient] | None = None,
+        payments: list[HarvestPayment] | None = None,
+        file_path: str | None = None,
+        file_sha256: str | None = None,
+        sync_cursor_source: str | None = None,
+        sync_cursor_value: str | None = None,
+    ) -> tuple[int, int, int]:
+        """Atomically upsert Harvest entities, record the ingestion batch, and update cursor."""
+        with self.transaction():
+            client_cnt = self.upsert_harvest_clients(clients) if clients is not None else 0
+            inv_cnt = self.upsert_harvest_invoices(invoices)
+            pay_cnt = self.upsert_harvest_payments(payments) if payments is not None else 0
+            self.record_ingestion_batch(
+                source="harvest",
+                input_kind=input_kind,
+                file_path=file_path,
+                file_sha256=file_sha256,
+                records_read=inv_cnt,
+                records_inserted=inv_cnt,
+            )
+            if sync_cursor_source and sync_cursor_value:
+                self.set_sync_cursor(sync_cursor_source, sync_cursor_value)
+        return client_cnt, inv_cnt, pay_cnt
 
     # ------------------------------------------------------------------
     # Bank transactions
@@ -363,7 +489,7 @@ class LedgerDB:
         """Insert bank transactions idempotently by fingerprint. Returns (read, inserted)."""
         now = utc_now_iso()
         inserted = 0
-        with self.conn:
+        with self.transaction():
             for tx in transactions:
                 cur = self.conn.execute(
                     """
@@ -456,7 +582,7 @@ class LedgerDB:
     def upsert_harvest_clients(self, clients: list[HarvestClient]) -> int:
         """Upsert Harvest clients and return count processed."""
         now = utc_now_iso()
-        with self.conn:
+        with self.transaction():
             for client in clients:
                 self.conn.execute(
                     """
@@ -484,7 +610,7 @@ class LedgerDB:
     def upsert_harvest_invoices(self, invoices: list[HarvestInvoice]) -> int:
         """Upsert Harvest invoices and return count processed."""
         now = utc_now_iso()
-        with self.conn:
+        with self.transaction():
             for inv in invoices:
                 line_items_json = json.dumps([item.to_dict() for item in inv.line_items])
                 self.conn.execute(
@@ -538,7 +664,7 @@ class LedgerDB:
     def upsert_harvest_payments(self, payments: list[HarvestPayment]) -> int:
         """Upsert Harvest payments and return count processed."""
         now = utc_now_iso()
-        with self.conn:
+        with self.transaction():
             for pay in payments:
                 self.conn.execute(
                     """
@@ -644,7 +770,7 @@ class LedgerDB:
         """Insert Gusto payroll runs idempotently by fingerprint. Returns (read, inserted)."""
         now = utc_now_iso()
         inserted = 0
-        with self.conn:
+        with self.transaction():
             for run in runs:
                 cur = self.conn.execute(
                     """

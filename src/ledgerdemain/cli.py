@@ -235,32 +235,25 @@ def _ingest_harvest_api(db: LedgerDB, cfg: AppConfig, since: str | None) -> tupl
         if inv.state in {"paid", "partial"} or inv.paid_date:
             payments.extend(adapter.fetch_payments_for_invoice(inv.harvest_id))
 
-    db.upsert_harvest_clients(clients)
-    db.upsert_harvest_invoices(invoices)
-    db.upsert_harvest_payments(payments)
-    db.record_ingestion_batch(
-        source="harvest",
+    return db.ingest_harvest_batch(
+        invoices,
         input_kind="api",
-        records_read=len(invoices),
-        records_inserted=len(invoices),
+        clients=clients,
+        payments=payments,
+        sync_cursor_source="harvest_invoices" if max_date else None,
+        sync_cursor_value=max_date or None,
     )
-    if max_date:
-        db.set_sync_cursor("harvest_invoices", max_date)
-    return len(clients), len(invoices), len(payments)
 
 
 def _ingest_harvest_file(db: LedgerDB, path: Path) -> int:
     invoices = HarvestCsvAdapter().parse_file(path)
-    db.upsert_harvest_invoices(invoices)
-    db.record_ingestion_batch(
-        source="harvest",
+    _, inv_cnt, _ = db.ingest_harvest_batch(
+        invoices,
         input_kind="csv",
         file_path=str(path),
         file_sha256=sha256_file(path),
-        records_read=len(invoices),
-        records_inserted=len(invoices),
     )
-    return len(invoices)
+    return inv_cnt
 
 
 def _ingest_grasshopper_api(
@@ -296,12 +289,14 @@ def _ingest_grasshopper_api(
             account_id=acct.account_id,
             account_key=acct.account_key,
         )
-        batch_id = db.record_ingestion_batch(source="grasshopper", input_kind="api")
-        read_cnt, ins_cnt = db.upsert_bank_transactions(txs, batch_id=batch_id)
-        db.update_batch_counts(batch_id, read_cnt, ins_cnt)
-        if txs:
-            latest = max(tx.posted_date for tx in txs)
-            db.set_sync_cursor(cursor_name, latest)
+        latest = max(tx.posted_date for tx in txs) if txs else None
+        read_cnt, ins_cnt = db.ingest_bank_transactions_batch(
+            txs,
+            source="grasshopper",
+            input_kind="api",
+            sync_cursor_source=cursor_name if latest else None,
+            sync_cursor_value=latest,
+        )
         total_read += read_cnt
         total_inserted += ins_cnt
         print(f"  Grasshopper API ({acct.account_key}): read {read_cnt}, inserted {ins_cnt}.")
@@ -371,15 +366,13 @@ def _ingest_grasshopper_file(
         acct_key = account_key_override or cfg.grasshopper.resolve_account_key(filename=path.name)
         txs = GrasshopperCsvAdapter().parse_file(path, account_key=acct_key)
         kind = "csv"
-    batch_id = db.record_ingestion_batch(
+    return db.ingest_bank_transactions_batch(
+        txs,
         source="grasshopper",
         input_kind=kind,
         file_path=str(path),
         file_sha256=sha256_file(path),
     )
-    read_cnt, ins_cnt = db.upsert_bank_transactions(txs, batch_id=batch_id)
-    db.update_batch_counts(batch_id, read_cnt, ins_cnt)
-    return read_cnt, ins_cnt
 
 
 def _ingest_capital_one_file(
@@ -405,15 +398,13 @@ def _ingest_capital_one_file(
         txs = CapitalOneCsvAdapter().parse_file(path)
         kind = "csv"
 
-    batch_id = db.record_ingestion_batch(
+    return db.ingest_bank_transactions_batch(
+        txs,
         source="capital_one",
         input_kind=kind,
         file_path=str(path),
         file_sha256=sha256_file(path),
     )
-    read_cnt, ins_cnt = db.upsert_bank_transactions(txs, batch_id=batch_id)
-    db.update_batch_counts(batch_id, read_cnt, ins_cnt)
-    return read_cnt, ins_cnt
 
 
 def _ingest_gusto_file(db: LedgerDB, cfg: AppConfig, path: Path, run_type: str) -> tuple[int, int]:
@@ -423,15 +414,11 @@ def _ingest_gusto_file(db: LedgerDB, cfg: AppConfig, path: Path, run_type: str) 
     runs = GustoPayrollCsvAdapter(cfg.gusto_column_overrides).parse_file(
         path, run_type=effective_type
     )
-    batch_id = db.record_ingestion_batch(
-        source="gusto",
-        input_kind="csv",
+    return db.ingest_gusto_payroll_batch(
+        runs,
         file_path=str(path),
         file_sha256=sha256_file(path),
     )
-    read_cnt, ins_cnt = db.upsert_gusto_payroll_runs(runs, batch_id=batch_id)
-    db.update_batch_counts(batch_id, read_cnt, ins_cnt)
-    return read_cnt, ins_cnt
 
 
 def _inbox_files(inbox_dir: Path, subdir: str, extensions: tuple[str, ...]) -> list[Path]:

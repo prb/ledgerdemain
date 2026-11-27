@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 
 from ledgerdemain.categorize import Categorizer
@@ -21,6 +21,18 @@ from ledgerdemain.money import ZERO, Money, format_money
 
 class BalanceError(ValueError):
     """Raised when a staged transaction violates double-entry accounting rules."""
+
+
+class UnresolvedAccountError(ValueError):
+    """An account key has no cached Wave account and no built-in default normal balance."""
+
+    def __init__(self, account_keys: Iterable[str]) -> None:
+        self.account_keys = sorted(set(account_keys))
+        super().__init__(
+            f"No cached Wave account or built-in default for: {', '.join(self.account_keys)}. "
+            "Run 'ledgerdemain wave sync-meta' and check that each key is mapped under "
+            "[accounts] in ledgerdemain.toml."
+        )
 
 
 DEFAULT_NORMAL_BALANCE: dict[str, str] = {
@@ -52,6 +64,20 @@ DEFAULT_NORMAL_BALANCE: dict[str, str] = {
     "bank_fees": "DEBIT",
     "uncategorized_expense": "DEBIT",
 }
+
+
+def resolve_normal_balance(db: LedgerDB, accounts: dict[str, str], account_key: str) -> str:
+    """Return an account's normal balance from the Wave cache, else the built-in default.
+
+    There is no further fallback: a key with neither is an error, because labelling a line
+    INCREASE or DECREASE against a guessed normal balance posts it backwards in Wave.
+    """
+    cached = db.resolve_wave_account(account_key, accounts)
+    if cached is not None:
+        return cached.normal_balance_type.upper()
+    if account_key in DEFAULT_NORMAL_BALANCE:
+        return DEFAULT_NORMAL_BALANCE[account_key]
+    raise UnresolvedAccountError([account_key])
 
 
 def validate_double_entry_balance(
@@ -121,15 +147,8 @@ class Planner:
         self.categorizer = categorizer
 
     def normal_balance_for(self, account_key: str) -> str:
-        """Resolve an account's normal balance from cached Wave accounts or defaults."""
-        cached = self.db.resolve_wave_account(account_key, self.config.accounts)
-        if cached is not None:
-            return cached.normal_balance_type.upper()
-        if account_key in DEFAULT_NORMAL_BALANCE:
-            return DEFAULT_NORMAL_BALANCE[account_key]
-        if account_key.endswith("_payable") or account_key.startswith("revenue"):
-            return "CREDIT"
-        return "DEBIT"
+        """Resolve an account's normal balance from cached Wave accounts or built-in defaults."""
+        return resolve_normal_balance(self.db, self.config.accounts, account_key)
 
     def _wave_account_id(self, account_key: str) -> str | None:
         cached = self.db.resolve_wave_account(account_key, self.config.accounts)
@@ -153,10 +172,19 @@ class Planner:
             if m.counterparty_bank_tx_id is not None:
                 tx_matches.setdefault(m.counterparty_bank_tx_id, []).append(m)
 
+        # Build everything first so an unresolved account key stages nothing.
+        staged_all: list[StagedTransaction] = []
+        unresolved: list[str] = []
         for tx in self.db.list_bank_transactions():
             assert tx.id is not None
-            matches = tx_matches.get(tx.id, [])
-            staged = self._build_staged_transaction(tx, matches)
+            try:
+                staged_all.append(self._build_staged_transaction(tx, tx_matches.get(tx.id, [])))
+            except UnresolvedAccountError as err:
+                unresolved.extend(err.account_keys)
+        if unresolved:
+            raise UnresolvedAccountError(unresolved)
+
+        for staged in staged_all:
             self.db.upsert_staged_transaction(staged)
             if staged.status == "staged":
                 summary.staged_transactions += 1

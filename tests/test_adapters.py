@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import contextlib
+import io
 import json
 import urllib.parse
 from collections.abc import Callable
@@ -15,8 +17,9 @@ from ledgerdemain.adapters.capital_one import CapitalOneCsvAdapter, CapitalOnePd
 from ledgerdemain.adapters.grasshopper import GrasshopperApiAdapter, GrasshopperCsvAdapter
 from ledgerdemain.adapters.gusto import GustoPayrollCsvAdapter
 from ledgerdemain.adapters.harvest import HarvestApiAdapter, HarvestCsvAdapter
-from ledgerdemain.adapters.ofx import OfxTransactionParser
+from ledgerdemain.adapters.ofx import OfxParseError, OfxTransactionParser
 from ledgerdemain.categorize import Categorizer
+from ledgerdemain.cli import main
 from ledgerdemain.config import GrasshopperConfig, HarvestConfig
 from ledgerdemain.db import LedgerDB, make_bank_fingerprint
 from ledgerdemain.http_client import HttpClient, HttpResponse
@@ -372,6 +375,436 @@ def test_ofx_unescaped_ampersand_fallback() -> None:
     assert tx.card_last4 == "9999"
     assert tx.description == "AT&T WIRELESS"
     assert tx.external_id == "FIT-AMP-1"
+
+
+@pytest.mark.parametrize(
+    "bad_input",
+    [
+        "",
+        "   \n\t  ",
+        "not an ofx document at all",
+        "Date,Description,Amount\n2026-01-01,Test,-10.00\n",
+        "<!DOCTYPE html><html><body>Please sign in</body></html>",
+        "<html><body><OFX><BANKTRANLIST></BANKTRANLIST></OFX></body></html>",
+        "<OFX><SIGNONMSGSRSV1><SONRS></SONRS></SIGNONMSGSRSV1></OFX>",
+        "<?xml version='1.0'?><OFX><SIGNONMSGSRSV1></SIGNONMSGSRSV1></OFX>",
+        "<OFX>\x00<BANKTRANLIST></BANKTRANLIST></OFX>",
+    ],
+)
+def test_ofx_rejects_non_ofx_empty_html_and_missing_banktranlist(bad_input: str) -> None:
+    parser = OfxTransactionParser()
+    with pytest.raises(OfxParseError) as exc_info:
+        parser.parse_statement_text(bad_input, source="capital_one", account_key="capital_one_card")
+    assert isinstance(exc_info.value, ValueError)
+
+
+def test_ofx_zero_activity_statements_succeed() -> None:
+    parser = OfxTransactionParser()
+    sgml_empty = """OFXHEADER:100
+DATA:OFXSGML
+<OFX><BANKMSGSRSV1><STMTTRNRS><STMTRS>
+<CURDEF>USD
+<BANKACCTFROM><ACCTID>00001111</BANKACCTFROM>
+<BANKTRANLIST>
+<DTSTART>20260101
+<DTEND>20260131
+</BANKTRANLIST>
+</STMTRS></STMTTRNRS></BANKMSGSRSV1></OFX>"""
+    sgml_stmt = parser.parse_statement_text(
+        sgml_empty,
+        source="grasshopper",
+        account_key="grasshopper_savings",
+        expected_currency="USD",
+        expected_account_last4="1111",
+    )
+    assert sgml_stmt.transactions == []
+    assert sgml_stmt.account_id == "00001111"
+    assert sgml_stmt.start_date == "2026-01-01"
+
+    xml_self_closing = """<?xml version="1.0" encoding="utf-8"?>
+<OFX><CREDITCARDMSGSRSV1><CCSTMTTRNRS><CCSTMTRS>
+<CURDEF>USD</CURDEF>
+<CCACCTFROM><ACCTID>9999</ACCTID></CCACCTFROM>
+<BANKTRANLIST/>
+</CCSTMTRS></CCSTMTTRNRS></CREDITCARDMSGSRSV1></OFX>"""
+    xml_stmt = parser.parse_statement_text(
+        xml_self_closing,
+        source="capital_one",
+        account_key="capital_one_card",
+        expected_currency="USD",
+        expected_account_last4="9999",
+    )
+    assert xml_stmt.transactions == []
+    assert xml_stmt.account_id == "9999"
+
+
+def test_ofx_lowercase_and_mixed_case_xml_parsed() -> None:
+    lower_xml = """<?xml version="1.0" encoding="utf-8"?>
+<ofx><creditcardmsgsrsv1><ccstmttrnrs><ccstmtrs>
+<curdef>usd</curdef>
+<ccacctfrom><acctid>9999</acctid></ccacctfrom>
+<banktranlist>
+  <dtstart>20260101</dtstart>
+  <dtend>20260131</dtend>
+  <stmttrn>
+    <trntype>DEBIT</trntype>
+    <dtposted>20260115</dtposted>
+    <trnamt>-19.99</trnamt>
+    <fitid>LOW-1</fitid>
+    <name>LOWERCASE XML TEST</name>
+  </stmttrn>
+</banktranlist>
+</ccstmtrs></ccstmttrnrs></creditcardmsgsrsv1></ofx>"""
+    stmt = OfxTransactionParser().parse_statement_text(
+        lower_xml,
+        source="capital_one",
+        account_key="capital_one_card",
+        expected_currency="USD",
+        expected_account_last4="9999",
+    )
+    assert stmt.currency == "USD"
+    assert len(stmt.transactions) == 1
+    assert stmt.transactions[0].amount == Money.parse("19.99")
+    assert stmt.transactions[0].external_id == "LOW-1"
+
+    mixed_xml = lower_xml.replace("<ofx>", "<Ofx>").replace("</ofx>", "</Ofx>")
+    mixed_no_decl = mixed_xml.split("\n", 1)[1]
+    stmt2 = OfxTransactionParser().parse_statement_text(
+        mixed_no_decl, source="capital_one", account_key="capital_one_card"
+    )
+    assert len(stmt2.transactions) == 1
+
+
+def test_ofx_truncated_or_malformed_xml_raises_instead_of_sgml_fallback() -> None:
+    parser = OfxTransactionParser()
+
+    # Truncated XML missing </OFX> even though one <STMTTRN> is complete
+    truncated_xml = """<?xml version="1.0" encoding="utf-8"?>
+<OFX><CREDITCARDMSGSRSV1><CCSTMTTRNRS><CCSTMTRS>
+<CURDEF>USD</CURDEF>
+<CCACCTFROM><ACCTID>9999</ACCTID></CCACCTFROM>
+<BANKTRANLIST>
+<STMTTRN>
+  <TRNTYPE>DEBIT</TRNTYPE>
+  <DTPOSTED>20260110</DTPOSTED>
+  <TRNAMT>-42.50</TRNAMT>
+  <FITID>FIT-1</FITID>
+  <NAME>PARTIAL TX</NAME>
+</STMTTRN>
+</BANKTRANLIST>
+</CCSTMTRS></CCSTMTTRNRS></CREDITCARDMSGSRSV1>"""
+    with pytest.raises(OfxParseError, match="</OFX>"):
+        parser.parse_statement_text(
+            truncated_xml, source="capital_one", account_key="capital_one_card"
+        )
+
+    # Malformed XML with closing </OFX> present must fail loudly, not fall back to SGML regexes
+    malformed_xml_with_decl = """<?xml version="1.0" encoding="utf-8"?>
+<OFX><CREDITCARDMSGSRSV1><CCSTMTTRNRS><CCSTMTRS>
+<CURDEF>USD</CURDEF>
+<CCACCTFROM><ACCTID>9999</ACCTID></CCACCTFROM>
+<BANKTRANLIST>
+<STMTTRN>
+  <TRNTYPE>DEBIT</TRNTYPE>
+  <DTPOSTED>20260110</DTPOSTED>
+  <TRNAMT>-42.50</MISMATCH>
+  <FITID>FIT-1</FITID>
+  <NAME>BROKEN XML</NAME>
+</STMTTRN>
+</BANKTRANLIST>
+</CCSTMTRS></CCSTMTTRNRS></CREDITCARDMSGSRSV1></OFX>"""
+    with pytest.raises(OfxParseError, match="Malformed XML"):
+        parser.parse_statement_text(
+            malformed_xml_with_decl, source="capital_one", account_key="capital_one_card"
+        )
+
+    # Malformed XML without <?xml?> declaration (has XML leaf closing tags)
+    malformed_xml_no_decl = malformed_xml_with_decl.split("\n", 1)[1]
+    with pytest.raises(OfxParseError, match="Malformed XML"):
+        parser.parse_statement_text(
+            malformed_xml_no_decl, source="capital_one", account_key="capital_one_card"
+        )
+
+
+def test_ofx_sgml_unclosed_stmttrn_terminated_before_balances() -> None:
+    sgml_ledger_before_close = """OFXHEADER:100
+DATA:OFXSGML
+<OFX><BANKMSGSRSV1><STMTTRNRS><STMTRS>
+<CURDEF>USD
+<BANKACCTFROM><ACCTID>00001234</BANKACCTFROM>
+<BANKTRANLIST>
+<STMTTRN>
+<TRNTYPE>DEBIT
+<DTPOSTED>20260120120000
+<TRNAMT>-75.00
+<FITID>SGML-UNCLOSED-1
+<NAME>ACME CLOUD
+<LEDGERBAL>
+<BALAMT>9876.54
+<DTASOF>20260121120000
+</LEDGERBAL>
+<AVAILBAL>
+<BALAMT>9000.00
+<DTASOF>20260121120000
+</AVAILBAL>
+</BANKTRANLIST>
+</STMTRS></STMTTRNRS></BANKMSGSRSV1></OFX>"""
+    stmt = OfxTransactionParser().parse_statement_text(
+        sgml_ledger_before_close, source="grasshopper", account_key="grasshopper_checking"
+    )
+    assert len(stmt.transactions) == 1
+    tx = stmt.transactions[0]
+    assert tx.amount == Money.parse("75.00")
+    assert tx.direction == "WITHDRAWAL"
+    assert tx.description == "ACME CLOUD"
+    assert "BALAMT" not in tx.raw
+    assert "DTASOF" not in tx.raw
+    assert stmt.ledger_balance == Money.parse("9876.54")
+    assert stmt.available_balance == Money.parse("9000.00")
+
+    # Verify direct SGML extractor termination across <AVAILBAL>, </STMTRS>, </CCSTMTRS>, </OFX>, $
+    for terminator in ("<AVAILBAL><BALAMT>500.00", "</STMTRS>", "</CCSTMTRS>", "</OFX>", ""):
+        snippet = (
+            "<BANKTRANLIST><STMTTRN><TRNTYPE>CREDIT<DTPOSTED>20260122"
+            "<TRNAMT>125.00<FITID>T-1<NAME>DIRECT SNIPPET\n"
+            f"{terminator}"
+        )
+        _, entries = OfxTransactionParser._extract_sgml_entries(snippet)
+        assert len(entries) == 1
+        assert "BALAMT" not in entries[0]
+        assert entries[0]["TRNAMT"] == "125.00"
+
+
+def test_ofx_truncated_sgml_raises() -> None:
+    parser = OfxTransactionParser()
+
+    missing_ofx_close = """OFXHEADER:100
+DATA:OFXSGML
+<OFX><BANKMSGSRSV1><STMTTRNRS><STMTRS>
+<BANKTRANLIST>
+<STMTTRN><TRNTYPE>DEBIT<DTPOSTED>20260120<TRNAMT>-10.00<FITID>1<NAME>ITEM
+</BANKTRANLIST>
+</STMTRS></STMTTRNRS></BANKMSGSRSV1>"""
+    with pytest.raises(OfxParseError, match="</OFX>"):
+        parser.parse_statement_text(
+            missing_ofx_close, source="grasshopper", account_key="grasshopper_checking"
+        )
+
+    missing_banktranlist_close = """OFXHEADER:100
+DATA:OFXSGML
+<OFX><BANKMSGSRSV1><STMTTRNRS><STMTRS>
+<BANKTRANLIST>
+<STMTTRN><TRNTYPE>DEBIT<DTPOSTED>20260120<TRNAMT>-10.00<FITID>1<NAME>ITEM
+</STMTRS></STMTTRNRS></BANKMSGSRSV1></OFX>"""
+    with pytest.raises(OfxParseError, match="</BANKTRANLIST>"):
+        parser.parse_statement_text(
+            missing_banktranlist_close, source="grasshopper", account_key="grasshopper_checking"
+        )
+
+    trailing_junk = f"{SAMPLE_OFX_SGML}\nTRUNCATED_TRAILING_DATA"
+    with pytest.raises(OfxParseError, match="trailing"):
+        parser.parse_statement_text(
+            trailing_junk, source="grasshopper", account_key="grasshopper_checking"
+        )
+
+
+@pytest.mark.parametrize(
+    ("body", "pattern"),
+    [
+        (
+            "<STMTTRN><TRNTYPE>DEBIT<TRNAMT>-10.00<FITID>1<NAME>NO DATE</STMTTRN>",
+            "DTPOSTED",
+        ),
+        (
+            "<STMTTRN><TRNTYPE>DEBIT<DTPOSTED>not-a-date<TRNAMT>-10.00<FITID>1</STMTTRN>",
+            "Invalid OFX date",
+        ),
+        (
+            "<STMTTRN><TRNTYPE>DEBIT<DTPOSTED>20261399<TRNAMT>-10.00<FITID>1</STMTTRN>",
+            "Invalid OFX date",
+        ),
+        (
+            "<STMTTRN><TRNTYPE>DEBIT<DTPOSTED>20260120<FITID>1<NAME>NO AMT</STMTTRN>",
+            "TRNAMT",
+        ),
+        (
+            "<STMTTRN><TRNTYPE>DEBIT<DTPOSTED>20260120<TRNAMT>N/A<FITID>1</STMTTRN>",
+            "Invalid OFX monetary amount",
+        ),
+        (
+            "<STMTTRN><TRNTYPE>DEBIT<DTPOSTED>20260120<TRNAMT>NaN<FITID>1</STMTTRN>",
+            "Invalid OFX monetary amount",
+        ),
+        (
+            "<STMTTRN></STMTTRN>",
+            "DTPOSTED",
+        ),
+    ],
+)
+def test_ofx_missing_or_invalid_stmttrn_fields_raise(body: str, pattern: str) -> None:
+    doc = (
+        "<OFX><BANKMSGSRSV1><STMTTRNRS><STMTRS>"
+        f"<BANKTRANLIST>{body}</BANKTRANLIST>"
+        "</STMTRS></STMTTRNRS></BANKMSGSRSV1></OFX>"
+    )
+    with pytest.raises(OfxParseError, match=pattern):
+        OfxTransactionParser().parse_statement_text(
+            doc, source="grasshopper", account_key="grasshopper_checking"
+        )
+
+
+def test_ofx_stmttrn_outside_banktranlist_raises_parity_error() -> None:
+    bad_xml = """<?xml version="1.0" encoding="utf-8"?>
+<OFX><BANKMSGSRSV1><STMTTRNRS><STMTRS>
+<BANKTRANLIST/>
+<STMTTRN><TRNTYPE>DEBIT</TRNTYPE><DTPOSTED>20260120</DTPOSTED><TRNAMT>-10.00</TRNAMT></STMTTRN>
+</STMTRS></STMTTRNRS></BANKMSGSRSV1></OFX>"""
+    with pytest.raises(OfxParseError, match="count mismatch"):
+        OfxTransactionParser().parse_statement_text(
+            bad_xml, source="grasshopper", account_key="grasshopper_checking"
+        )
+
+
+def test_ofx_expected_currency_and_account_last4_validation() -> None:
+    parser = OfxTransactionParser()
+
+    eur_xml = SAMPLE_CAPITAL_ONE_OFX_XML.replace("<CURDEF>USD</CURDEF>", "<CURDEF>EUR</CURDEF>")
+    with pytest.raises(OfxParseError, match="currency mismatch"):
+        parser.parse_statement_text(
+            eur_xml,
+            source="capital_one",
+            account_key="capital_one_card",
+            expected_currency="USD",
+        )
+
+    # Case-insensitive match passes
+    stmt = parser.parse_statement_text(
+        SAMPLE_CAPITAL_ONE_OFX_XML,
+        source="capital_one",
+        account_key="capital_one_card",
+        expected_currency="usd",
+        expected_account_last4="9999",
+    )
+    assert stmt.currency == "USD"
+
+    # Legacy SGML fixture without <CURDEF> defaults to USD and rejects non-USD expectations
+    stmt_sgml = parser.parse_statement_text(
+        SAMPLE_OFX_SGML,
+        source="grasshopper",
+        account_key="grasshopper_checking",
+        expected_currency="USD",
+    )
+    assert stmt_sgml.currency == "USD"
+    with pytest.raises(OfxParseError, match="currency mismatch"):
+        parser.parse_statement_text(
+            SAMPLE_OFX_SGML,
+            source="grasshopper",
+            account_key="grasshopper_checking",
+            expected_currency="EUR",
+        )
+
+    # Account last-4 mismatches and normalization
+    with pytest.raises(OfxParseError, match="account mismatch"):
+        parser.parse_statement_text(
+            SAMPLE_CAPITAL_ONE_OFX_XML,
+            source="capital_one",
+            account_key="capital_one_card",
+            expected_account_last4="1234",
+        )
+    with pytest.raises(OfxParseError, match="account mismatch"):
+        parser.parse_statement_text(
+            SAMPLE_OFX_SGML,
+            source="grasshopper",
+            account_key="grasshopper_checking",
+            expected_account_last4="9999",
+        )
+    masked_xml = SAMPLE_CAPITAL_ONE_OFX_XML.replace(
+        "<ACCTID>9999</ACCTID>", "<ACCTID>0000-9999</ACCTID>"
+    )
+    stmt_masked = parser.parse_statement_text(
+        masked_xml,
+        source="capital_one",
+        account_key="capital_one_card",
+        expected_account_last4="****9999",
+    )
+    assert stmt_masked.account_id == "0000-9999"
+
+
+def test_cli_ofx_validation_account_override_and_currency_mismatch(tmp_path: Path) -> None:
+    cfg = make_test_config(tmp_path, include_api_creds=False)
+    cfg_path = cfg.config_dir / "ledgerdemain.toml"
+    with cfg_path.open("a", encoding="utf-8") as fh:
+        fh.write(
+            """
+[[grasshopper.accounts]]
+account_key = "grasshopper_savings"
+acctid_last4 = "1111"
+
+[[grasshopper.accounts]]
+account_key = "grasshopper_money_market"
+acctid_last4 = "2222"
+"""
+        )
+
+    sav_ofx = tmp_path / "sav.ofx"
+    sav_ofx.write_text(
+        """<OFX><BANKMSGSRSV1><STMTTRNRS><STMTRS>
+<CURDEF>USD
+<BANKACCTFROM><ACCTID>00001111</BANKACCTFROM>
+<BANKTRANLIST>
+<STMTTRN><TRNTYPE>DEBIT<DTPOSTED>20261105<TRNAMT>-100.00<FITID>S-1<NAME>TEST</STMTTRN>
+</BANKTRANLIST>
+</STMTRS></STMTTRNRS></BANKMSGSRSV1></OFX>""",
+        encoding="utf-8",
+    )
+
+    # Forcing wrong --account-key fails loudly with exit code 2
+    err_buf = io.StringIO()
+    with contextlib.redirect_stderr(err_buf):
+        code = main(
+            [
+                "--config",
+                str(cfg_path),
+                "ingest",
+                "grasshopper",
+                "--file",
+                str(sav_ofx),
+                "--account-key",
+                "grasshopper_money_market",
+            ]
+        )
+    assert code == 2
+    assert "account mismatch" in err_buf.getvalue()
+
+    # Matching --account-key succeeds
+    out_buf = io.StringIO()
+    with contextlib.redirect_stdout(out_buf):
+        code = main(
+            [
+                "--config",
+                str(cfg_path),
+                "ingest",
+                "grasshopper",
+                "--file",
+                str(sav_ofx),
+                "--account-key",
+                "grasshopper_savings",
+            ]
+        )
+    assert code == 0
+
+    # Capital One OFX currency mismatch against config currency fails loudly
+    cfg_path.write_text(
+        cfg_path.read_text(encoding="utf-8").replace('currency = "USD"', 'currency = "EUR"'),
+        encoding="utf-8",
+    )
+    cap_ofx = tmp_path / "cap.ofx"
+    cap_ofx.write_text(SAMPLE_CAPITAL_ONE_OFX_XML, encoding="utf-8")
+    err_buf2 = io.StringIO()
+    with contextlib.redirect_stderr(err_buf2):
+        code2 = main(["--config", str(cfg_path), "ingest", "capital-one", "--file", str(cap_ofx)])
+    assert code2 == 2
+    assert "currency mismatch" in err_buf2.getvalue()
 
 
 def test_gusto_payroll_journal_multi_section_and_scorp_imputed_benefits(tmp_path: Path) -> None:

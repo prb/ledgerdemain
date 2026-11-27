@@ -326,15 +326,44 @@ def _ingest_grasshopper_file(
     account_key_override: str | None = None,
 ) -> tuple[int, int]:
     if path.suffix.lower() in {".ofx", ".qfx", ".qbo"}:
-        probe = OfxTransactionParser().parse_statement_file(
-            path, source="grasshopper", account_key="grasshopper_checking"
-        )
-        acct_key = account_key_override or cfg.grasshopper.resolve_account_key(
-            ofx_account_id=probe.account_id, filename=path.name
-        )
-        stmt = OfxTransactionParser().parse_statement_file(
-            path, source="grasshopper", account_key=acct_key
-        )
+        parser = OfxTransactionParser()
+        if account_key_override:
+            acct_key = account_key_override
+            expected_last4 = next(
+                (
+                    acct.acctid_last4
+                    for acct in cfg.grasshopper.configured_accounts
+                    if acct.account_key == account_key_override and acct.acctid_last4
+                ),
+                None,
+            )
+            stmt = parser.parse_statement_file(
+                path,
+                source="grasshopper",
+                account_key=acct_key,
+                expected_currency=cfg.general.currency,
+                expected_account_last4=expected_last4,
+            )
+        else:
+            probe = parser.parse_statement_file(
+                path,
+                source="grasshopper",
+                account_key="grasshopper_checking",
+                expected_currency=cfg.general.currency,
+            )
+            acct_key = cfg.grasshopper.resolve_account_key(
+                ofx_account_id=probe.account_id, filename=path.name
+            )
+            stmt = (
+                probe
+                if acct_key == "grasshopper_checking"
+                else parser.parse_statement_file(
+                    path,
+                    source="grasshopper",
+                    account_key=acct_key,
+                    expected_currency=cfg.general.currency,
+                )
+            )
         txs = stmt.transactions
         kind = "ofx"
         _print_ofx_summary(path, stmt, account_key=acct_key)
@@ -351,18 +380,23 @@ def _ingest_grasshopper_file(
     read_cnt, ins_cnt = db.upsert_bank_transactions(txs, batch_id=batch_id)
     db.update_batch_counts(batch_id, read_cnt, ins_cnt)
     return read_cnt, ins_cnt
-    db.update_batch_counts(batch_id, read_cnt, ins_cnt)
-    return read_cnt, ins_cnt
 
 
-def _ingest_capital_one_file(db: LedgerDB, path: Path) -> tuple[int, int]:
+def _ingest_capital_one_file(
+    db: LedgerDB,
+    path: Path,
+    expected_currency: str | None = "USD",
+) -> tuple[int, int]:
     suffix = path.suffix.lower()
     if suffix == ".pdf":
         txs = CapitalOnePdfAdapter().parse_file(path)
         kind = "pdf"
     elif suffix in {".ofx", ".qfx", ".qbo"}:
         stmt = OfxTransactionParser().parse_statement_file(
-            path, source="capital_one", account_key="capital_one_card"
+            path,
+            source="capital_one",
+            account_key="capital_one_card",
+            expected_currency=expected_currency,
         )
         txs = stmt.transactions
         kind = "ofx"
@@ -508,7 +542,7 @@ def _cmd_ingest(args: argparse.Namespace) -> int:
             )
             total_r = total_i = 0
             for f in files:
-                r, ins = _ingest_capital_one_file(db, f)
+                r, ins = _ingest_capital_one_file(db, f, expected_currency=cfg.general.currency)
                 total_r += r
                 total_i += ins
             print(
@@ -554,7 +588,7 @@ def _cmd_ingest(args: argparse.Namespace) -> int:
             for f in _inbox_files(
                 cfg.general.inbox_dir, "capital_one", (".csv", ".pdf", ".ofx", ".qfx", ".qbo")
             ):
-                r, ins = _ingest_capital_one_file(db, f)
+                r, ins = _ingest_capital_one_file(db, f, expected_currency=cfg.general.currency)
                 print(f"Capital One ({f.name}): read {r}, inserted {ins}.")
 
             for f in _inbox_files(cfg.general.inbox_dir, "gusto", (".csv",)):

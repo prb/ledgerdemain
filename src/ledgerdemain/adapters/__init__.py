@@ -13,7 +13,7 @@ from ledgerdemain.adapters.capital_one import CapitalOneCsvAdapter, CapitalOnePd
 from ledgerdemain.adapters.grasshopper import GrasshopperApiAdapter, GrasshopperCsvAdapter
 from ledgerdemain.adapters.gusto import GustoPayrollCsvAdapter
 from ledgerdemain.adapters.harvest import HarvestApiAdapter, HarvestCsvAdapter
-from ledgerdemain.adapters.ofx import OfxStatement, OfxTransactionParser
+from ledgerdemain.adapters.ofx import OfxParseError, OfxStatement, OfxTransactionParser
 
 __all__ = [
     "AdapterRegistry",
@@ -25,6 +25,7 @@ __all__ = [
     "HarvestApiAdapter",
     "HarvestCsvAdapter",
     "InvoiceSourceAdapter",
+    "OfxParseError",
     "OfxStatement",
     "OfxTransactionParser",
     "PayrollSourceAdapter",

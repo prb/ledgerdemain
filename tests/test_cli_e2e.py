@@ -5,6 +5,7 @@ from __future__ import annotations
 import contextlib
 import io
 import json
+import re
 import urllib.parse
 from pathlib import Path
 from typing import Any
@@ -19,6 +20,7 @@ from tests.fixtures import (
     E2E_GRASSHOPPER_OFX,
     E2E_HARVEST_CLIENTS,
     E2E_HARVEST_INVOICES,
+    E2E_HARVEST_PAYMENTS,
     SAMPLE_GUSTO_PAYROLL_CSV,
     RoutingMockTransport,
     write_test_workspace_config,
@@ -37,22 +39,37 @@ def _run_cli(cfg_path: Path, argv: list[str]) -> tuple[int, str, str]:
 def _mock_api_handler(
     method: str, url: str, headers: dict[str, str], body: bytes | None
 ) -> HttpResponse:
-    """Serve Harvest from fixtures. Grasshopper API has no transactions (its data is OFX)."""
+    """Serve Harvest from fixtures and an empty Grasshopper API; 404 on any other request.
+
+    Grasshopper data comes from OFX, so its API has no transactions.
+    """
     del method, headers, body
-    payload: dict[str, Any]
-    if "harvestapp" in url:
-        path = urllib.parse.urlparse(url).path
-        if path.endswith("/clients"):
+    parsed = urllib.parse.urlparse(url)
+    path = parsed.path
+    payload: dict[str, Any] | None = None
+    if parsed.netloc == "api.harvestapp.com":
+        payments = re.fullmatch(r"/v2/invoices/(\d+)/payments", path)
+        if path == "/v2/clients":
             payload = E2E_HARVEST_CLIENTS
-        elif path.endswith("/invoices"):
+        elif path == "/v2/invoices":
             payload = E2E_HARVEST_INVOICES
-        elif path.endswith("/payments"):
-            payload = {"invoice_payments": [], "next_page": None}
-        else:
-            return HttpResponse(404, {}, b"{}")
-    else:
+        elif payments:
+            payload = E2E_HARVEST_PAYMENTS.get(
+                int(payments.group(1)), {"invoice_payments": [], "next_page": None}
+            )
+    elif parsed.netloc == "api.grasshopper.bank" and re.fullmatch(
+        r"/v1/accounts/[^/]+/transactions", path
+    ):
         payload = {"transactions": []}
+    if payload is None:
+        return HttpResponse(404, {}, b"{}")
     return HttpResponse(200, {}, json.dumps(payload).encode("utf-8"))
+
+
+def _no_wave_requests(
+    method: str, url: str, headers: dict[str, str], body: bytes | None
+) -> HttpResponse:
+    raise AssertionError(f"Unexpected Wave request in an offline test: {method} {url}")
 
 
 def test_full_offline_cli_workflow(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -72,8 +89,15 @@ def test_full_offline_cli_workflow(tmp_path: Path, monkeypatch: pytest.MonkeyPat
             transport=RoutingMockTransport(_mock_api_handler), sleep_fn=lambda _: None
         )
 
+    def no_wave_http_client(*_args: object, **_kwargs: object) -> HttpClient:
+        return HttpClient(
+            transport=RoutingMockTransport(_no_wave_requests), sleep_fn=lambda _: None
+        )
+
     monkeypatch.setattr("ledgerdemain.adapters.harvest.HttpClient", mock_http_client)
     monkeypatch.setattr("ledgerdemain.adapters.grasshopper.HttpClient", mock_http_client)
+    # The config also carries Wave credentials; make sure nothing in this test can reach Wave.
+    monkeypatch.setattr("ledgerdemain.wave.client.HttpClient", no_wave_http_client)
 
     # Drop OFX and Gusto CSV files into the inbox (Harvest comes from the mocked API)
     (tmp_path / "inbox/grasshopper/checking.ofx").write_text(E2E_GRASSHOPPER_OFX, encoding="utf-8")
@@ -88,7 +112,7 @@ def test_full_offline_cli_workflow(tmp_path: Path, monkeypatch: pytest.MonkeyPat
     # 2. ingest all
     code, out, err = _run_cli(cfg_path, ["ingest", "all"])
     assert code == 0, err
-    assert "Harvest API: 3 clients, 3 invoices, 0 payments." in out
+    assert "Harvest API: 3 clients, 3 invoices, 2 payments." in out
 
     # 3. reconcile
     code, out, err = _run_cli(cfg_path, ["reconcile", "--confirm-high-confidence"])
@@ -132,7 +156,9 @@ def test_full_offline_cli_workflow(tmp_path: Path, monkeypatch: pytest.MonkeyPat
     dry_json: dict[str, Any] = json.loads(out)
     assert dry_json["dry_run"] is True
     assert dry_json["invoices_ready"] == 3
-    assert dry_json["transactions_ready"] == 11
+    # 10, not 11: with real OFX TRNTYPE values (DEBIT/CREDIT) the two BLUE BOTTLE COFFEE rows no
+    # longer match the "Dining Fallback" rule, because OFX carries no merchant category (#35).
+    assert dry_json["transactions_ready"] == 10
     for p in dry_json["payloads"]:
         if p["operation"] == "moneyTransactionCreate":
             assert "status" not in p["input"]

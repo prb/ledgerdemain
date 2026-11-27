@@ -7,6 +7,7 @@ import zlib
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
+from xml.sax.saxutils import escape
 
 from ledgerdemain.config import AppConfig, load_config
 from ledgerdemain.http_client import HttpResponse
@@ -696,11 +697,10 @@ class RoutingMockTransport:
         return self.handler(method, url, hdrs, body)
 
 
-# One OFX statement entry: (DTPOSTED, DTUSER, signed TRNAMT, NAME, FITID, TRNTYPE).
-# The OFX parser stores TRNTYPE verbatim as the transaction's source_category, which rules such
-# as "Capital One Dining Fallback" and unpaired credit card payment detection match on. An empty
-# TRNTYPE omits the element.
-OfxEntry = tuple[str, str, str, str, str, str]
+# One OFX statement entry: (DTPOSTED, DTUSER, signed TRNAMT, NAME, FITID). Like a real bank file,
+# TRNTYPE is DEBIT for a negative amount and CREDIT for a positive one. Merchant categories are
+# not part of OFX, so category-based rules (see #35) cannot match these entries.
+OfxEntry = tuple[str, str, str, str, str]
 
 
 def build_ofx_xml(section: str, acct_from: str, acct_id: str, entries: list[OfxEntry]) -> str:
@@ -709,11 +709,11 @@ def build_ofx_xml(section: str, acct_from: str, acct_id: str, entries: list[OfxE
     trn_tag = "STMTTRNRS" if section == "BANK" else "CCSTMTTRNRS"
     body = "\n".join(
         "<STMTTRN>"
-        f"{f'<TRNTYPE>{trntype}</TRNTYPE>' if trntype else ''}"
+        f"<TRNTYPE>{'DEBIT' if amt.startswith('-') else 'CREDIT'}</TRNTYPE>"
         f"<DTPOSTED>{posted}000000</DTPOSTED><DTUSER>{user}000000</DTUSER>"
-        f"<TRNAMT>{amt}</TRNAMT><FITID>{fitid}</FITID><NAME>{name}</NAME>"
+        f"<TRNAMT>{amt}</TRNAMT><FITID>{escape(fitid)}</FITID><NAME>{escape(name)}</NAME>"
         "</STMTTRN>"
-        for posted, user, amt, name, fitid, trntype in entries
+        for posted, user, amt, name, fitid in entries
     )
     return f"""<?xml version="1.0" encoding="utf-8" ?>
 <?OFX OFXHEADER="200" VERSION="202" SECURITY="NONE" OLDFILEUID="NONE" NEWFILEUID="NONE"?>
@@ -735,19 +735,20 @@ def build_ofx_xml(section: str, acct_from: str, acct_id: str, entries: list[OfxE
 
 
 # The e2e workflow data below mirrors SAMPLE_GRASSHOPPER_CSV, SAMPLE_CAPITAL_ONE_CSV and
-# SAMPLE_CAPITAL_ONE_PDF_LINES (same dates, descriptions, amounts, directions, card last-4 and
-# source category), expressed as OFX so the e2e test does not depend on the CSV/PDF adapters.
+# SAMPLE_CAPITAL_ONE_PDF_LINES (same dates, descriptions, amounts, directions and card last-4),
+# expressed as OFX so the e2e test does not depend on the CSV/PDF adapters. The CSV and PDF
+# merchant categories are dropped because OFX does not carry them.
 E2E_GRASSHOPPER_OFX = build_ofx_xml(
     "BANK",
     "BANKACCTFROM",
     "9012",
     [
-        ("20260105", "20260105", "3000.00", "ACH DEPOSIT ACME CORP INV-1001", "GH-1", "Deposit"),
-        ("20260109", "20260109", "-45.00", "GUSTO FEE MONTHLY SUBSCRIPTION", "GH-2", "Software"),
-        ("20260110", "20260110", "-3705.75", "GUSTO PAY 260110", "GH-3", "Payroll"),
-        ("20260110", "20260110", "-1315.50", "GUSTO TAX 260110", "GH-4", "Payroll Tax"),
-        ("20260112", "20260112", "-500.00", "CAPITAL ONE AUTOPAY ACH", "GH-5", "Transfer"),
-        ("20260115", "20260115", "1940.00", "STRIPE TRANSFER WIDGET LABS", "GH-6", "Deposit"),
+        ("20260105", "20260105", "3000.00", "ACH DEPOSIT ACME CORP INV-1001", "GH-1"),
+        ("20260109", "20260109", "-45.00", "GUSTO FEE MONTHLY SUBSCRIPTION", "GH-2"),
+        ("20260110", "20260110", "-3705.75", "GUSTO PAY 260110", "GH-3"),
+        ("20260110", "20260110", "-1315.50", "GUSTO TAX 260110", "GH-4"),
+        ("20260112", "20260112", "-500.00", "CAPITAL ONE AUTOPAY ACH", "GH-5"),
+        ("20260115", "20260115", "1940.00", "STRIPE TRANSFER WIDGET LABS", "GH-6"),
     ],
 )
 
@@ -756,12 +757,12 @@ E2E_CAPITAL_ONE_JAN_OFX = build_ofx_xml(
     "CCACCTFROM",
     "1234",
     [
-        ("20260104", "20260103", "-142.50", "AMAZON WEB SERVICES", "C1-1", "Merchandise"),
-        ("20260105", "20260105", "-6.25", "BLUE BOTTLE COFFEE", "C1-2", "Dining"),
-        ("20260105", "20260105", "-6.25", "BLUE BOTTLE COFFEE", "C1-3", "Dining"),
-        ("20260107", "20260106", "15.00", "FIGMA.COM", "C1-4", "Merchandise"),
-        ("20260108", "20260108", "-88.00", "MYSTERY HARDWARE CO", "C1-5", "Merchandise"),
-        ("20260112", "20260112", "500.00", "CAPITAL ONE AUTOPAY PYMT", "C1-6", "Payment/Credit"),
+        ("20260104", "20260103", "-142.50", "AMAZON WEB SERVICES", "C1-1"),
+        ("20260105", "20260105", "-6.25", "BLUE BOTTLE COFFEE", "C1-2"),
+        ("20260105", "20260105", "-6.25", "BLUE BOTTLE COFFEE", "C1-3"),
+        ("20260107", "20260106", "15.00", "FIGMA.COM", "C1-4"),
+        ("20260108", "20260108", "-88.00", "MYSTERY HARDWARE CO", "C1-5"),
+        ("20260112", "20260112", "500.00", "CAPITAL ONE AUTOPAY PYMT", "C1-6"),
     ],
 )
 
@@ -770,10 +771,10 @@ E2E_CAPITAL_ONE_STATEMENT_OFX = build_ofx_xml(
     "CCACCTFROM",
     "4321",
     [
-        ("20251221", "20251220", "250.00", "CAPITAL ONE ONLINE PYMT", "C2-1", "Payment/Credit"),
-        ("20260102", "20260102", "25.00", "SLACK REFUND", "C2-2", "Payment/Credit"),
-        ("20251229", "20251228", "-45.00", "GITHUB INC SAN FRANCISCO CA", "C2-3", ""),
-        ("20260105", "20260104", "-320.00", "DELTA AIR LINES ATLANTA GA", "C2-4", ""),
+        ("20251221", "20251220", "250.00", "CAPITAL ONE ONLINE PYMT", "C2-1"),
+        ("20260102", "20260102", "25.00", "SLACK REFUND", "C2-2"),
+        ("20251229", "20251228", "-45.00", "GITHUB INC SAN FRANCISCO CA", "C2-3"),
+        ("20260105", "20260104", "-320.00", "DELTA AIR LINES ATLANTA GA", "C2-4"),
     ],
 )
 
@@ -826,6 +827,22 @@ def _harvest_invoice(
         ],
     }
 
+
+# One payment each for the two paid invoices, served by /invoices/<id>/payments.
+E2E_HARVEST_PAYMENTS: dict[int, dict[str, Any]] = {
+    1: {
+        "invoice_payments": [
+            {"id": 501, "amount": "3000.00", "paid_date": "2026-01-05", "notes": "ACH"}
+        ],
+        "next_page": None,
+    },
+    2: {
+        "invoice_payments": [
+            {"id": 502, "amount": "2000.00", "paid_date": "2026-01-15", "notes": "Stripe"}
+        ],
+        "next_page": None,
+    },
+}
 
 E2E_HARVEST_INVOICES: dict[str, Any] = {
     "invoices": [

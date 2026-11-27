@@ -143,10 +143,7 @@ class Reconciler:
             for tx in self.db.list_bank_transactions(source="capital_one", direction="DEPOSIT")
             if tx.id is not None
             and tx.id not in claimed_tx_ids
-            and (
-                _matches_any(self.config.patterns.capital_one_payment, tx.description)
-                or "payment" in tx.source_category.lower()
-            )
+            and _matches_any(self.config.patterns.capital_one_payment, tx.description)
         ]
 
         window = self.config.accounting.transfer_match_window_days

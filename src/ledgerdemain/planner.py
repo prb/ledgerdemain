@@ -687,10 +687,7 @@ class Planner:
                 p.search(tx.description) for p in self.config.patterns.grasshopper_cc_payment
             )
         if tx.source == "capital_one" and tx.direction == "DEPOSIT":
-            return (
-                any(p.search(tx.description) for p in self.config.patterns.capital_one_payment)
-                or "payment" in tx.source_category.lower()
-            )
+            return any(p.search(tx.description) for p in self.config.patterns.capital_one_payment)
         return False
 
     @staticmethod

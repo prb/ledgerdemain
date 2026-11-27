@@ -315,7 +315,7 @@ def test_cc_transfer_manual_vs_clearing_and_unpaired(
                     "500.00",
                     "DEPOSIT",
                     "co-p",
-                    "Payment/Credit",
+                    "CREDIT",
                 ),
                 _tx(
                     "grasshopper",
@@ -402,3 +402,31 @@ def test_switching_off_invoice_mirroring_clears_unpushed_staged_invoices(
         staged_txs = db.list_staged_transactions()
         assert len(staged_txs) == 1
         assert staged_txs[0].line_items[0].account_key == "revenue_default"
+
+
+@pytest.mark.parametrize(
+    ("desc", "category", "expected_rule"),
+    [
+        ("CAPITAL ONE ONLINE PYMT", "CREDIT", "unpaired_cc_payment"),
+        ("CAPITAL ONE MOBILE PYMT", "CREDIT", "unpaired_cc_payment"),
+        ("ACME REFUND", "Payment/Credit", None),
+    ],
+)
+def test_unpaired_capital_one_credit_uses_description_pattern_only(
+    tmp_path: Path, desc: str, category: str, expected_rule: str | None
+) -> None:
+    cfg = make_test_config(tmp_path)
+    rules = load_rules(cfg.general.rules_path)
+    with LedgerDB(cfg.general.db_path) as db:
+        db.init_schema()
+        db.upsert_bank_transactions(
+            [_tx("capital_one", "2026-01-12", desc, "75.00", "DEPOSIT", "co-x", category)]
+        )
+        Reconciler(db, cfg).reconcile_all(confirm_high_confidence=True)
+        Planner(db, cfg, Categorizer(rules)).build_plan()
+        (staged,) = db.list_staged_transactions()
+        if expected_rule is None:
+            assert staged.category_rule != "unpaired_cc_payment"
+        else:
+            assert staged.category_rule == expected_rule
+            assert staged.status == "needs_review"

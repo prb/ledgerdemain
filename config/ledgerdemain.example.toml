@@ -48,7 +48,6 @@ account_id = "${GRASSHOPPER_MM_ACCOUNT_ID}"
 
 # Anchor accounts (Cash/Bank Assets and Credit Card Liabilities)
 grasshopper_checking = "Grasshopper Checking"
-grasshopper_savings = "Grasshopper Savings"
 grasshopper_money_market = "Grasshopper Money Market"
 capital_one_card = "Capital One Credit Card"
 

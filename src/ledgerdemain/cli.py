@@ -56,8 +56,8 @@ header_secret = "${GRASSHOPPER_HEADER_SECRET}"
 header_secret_name = "X-API-Secret"
 
 [[grasshopper.accounts]]
-account_key = "grasshopper_savings"
-account_id = "${GRASSHOPPER_SAVINGS_ACCOUNT_ID}"
+account_key = "grasshopper_checking"
+account_id = "${GRASSHOPPER_CHECKING_ACCOUNT_ID}"
 
 [[grasshopper.accounts]]
 account_key = "grasshopper_money_market"
@@ -65,7 +65,6 @@ account_id = "${GRASSHOPPER_MM_ACCOUNT_ID}"
 
 [accounts]
 grasshopper_checking = "Grasshopper Checking"
-grasshopper_savings = "Grasshopper Savings"
 grasshopper_money_market = "Grasshopper Money Market"
 capital_one_card = "Capital One Credit Card"
 revenue_default = "Sales"

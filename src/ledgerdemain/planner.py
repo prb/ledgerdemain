@@ -26,7 +26,6 @@ class BalanceError(ValueError):
 DEFAULT_NORMAL_BALANCE: dict[str, str] = {
     # Cash/Bank Assets
     "grasshopper_checking": "DEBIT",
-    "grasshopper_savings": "DEBIT",
     "grasshopper_money_market": "DEBIT",
     # Liabilities
     "capital_one_card": "CREDIT",

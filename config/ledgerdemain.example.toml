@@ -11,23 +11,6 @@ currency = "USD"
 keychain_service = "ledgerdemain"
 
 [accounting]
-# When true, Harvest invoices are mirrored into Wave via `invoiceCreate`.
-mirror_harvest_invoices = true
-
-# How deposits matched to Harvest invoices are staged when `mirror_harvest_invoices = true`:
-#   - "ar_clearing": push bank deposit against `invoice_payments_clearing` (then apply in Wave UI or clear)
-#   - "manual_ui_payment": do not push deposit via API; emit manual payment checklist for Wave UI
-#   - "direct_income": ONLY valid when `mirror_harvest_invoices = false` (cash-basis revenue recognition)
-mirrored_invoice_deposit_strategy = "ar_clearing"
-
-# Initial Wave invoice status on `invoiceCreate`: "SAVED" or "DRAFT"
-wave_invoice_create_status = "SAVED"
-
-# How matched Grasshopper -> Capital One credit card payments are handled:
-#   - "manual_transfer": hold both legs for Wave UI Transfer entry (recommended; Wave API lacks transfer mutation)
-#   - "clearing_account": push both legs against `cc_transfer_clearing` so the clearing account nets to $0.00
-transfer_strategy = "manual_transfer"
-
 # Date matching windows (calendar days +/-)
 deposit_match_window_days = 7
 payroll_match_window_days = 5
@@ -40,7 +23,6 @@ auto_confirm_threshold = 0.90
 endpoint = "https://gql.waveapps.com/graphql/public"
 business_id = "${WAVE_BUSINESS_ID}"
 access_token = "${keychain:WAVE_ACCESS_TOKEN}"
-default_product_name = "Consulting Services"
 
 [harvest]
 base_url = "https://api.harvestapp.com/v2"
@@ -69,14 +51,12 @@ account_id = "${GRASSHOPPER_MM_ACCOUNT_ID}"
 
 # Anchor accounts (Cash/Bank Assets and Credit Card Liabilities)
 grasshopper_checking = "Grasshopper Checking"
-grasshopper_savings = "Grasshopper Savings"
 grasshopper_money_market = "Grasshopper Money Market"
 capital_one_card = "Capital One Credit Card"
 
-# Revenue & AR clearing
+# Revenue
 revenue_default = "Sales"
 interest_income = "Interest Income"
-invoice_payments_clearing = "Invoice Payments Clearing"
 merchant_fees = "Merchant Processing Fees"
 
 # Payroll & Tax accounts
@@ -90,10 +70,6 @@ payroll_taxes_payable = "Payroll Taxes Payable"
 payroll_benefits_payable = "Payroll Benefits Payable"
 payroll_processing_fees = "Payroll Processing Fees"
 contractors_expense = "Contractors"
-
-# Transfer clearing (only needed if transfer_strategy = "clearing_account")
-cc_transfer_clearing = "Credit Card Payment Clearing"
-bank_transfer_clearing = "Bank Transfer Clearing"
 
 # Operating expenses
 software_subscriptions = "Software & Subscriptions"

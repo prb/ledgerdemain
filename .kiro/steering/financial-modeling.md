@@ -44,8 +44,7 @@ validating monetary amounts and accounting transactions in Ledgerdemain.
   `+anchor_amount` for a `WITHDRAWAL` and `-anchor_amount` for a `DEPOSIT` with zero
   imbalance.
 - **Zero out clearing accounts.** Clearing accounts (`payroll_taxes_payable`,
-  `payroll_benefits_payable`, `invoice_payments_clearing`, `cc_transfer_clearing`,
-  `bank_transfer_clearing`) must net to `Money.ZERO` (`0.00`) once all corresponding
+  `payroll_benefits_payable`) must net to `Money.ZERO` (`0.00`) once all corresponding
   legs are matched and posted.
 - **Serialize canonically for storage, APIs, and fingerprints.** Format `Money` with
   `format_money(value)` (`Money.format()`, e.g. `"-1234.56"`, fixed 2 decimal places,

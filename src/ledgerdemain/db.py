@@ -19,12 +19,10 @@ from ledgerdemain.models import (
     HarvestInvoiceLineItem,
     HarvestPayment,
     ReconciliationMatch,
-    StagedInvoice,
     StagedLineItem,
     StagedTransaction,
     WaveAccount,
     WaveCustomer,
-    WaveProduct,
 )
 from ledgerdemain.money import Money, format_money, parse_money
 
@@ -106,7 +104,7 @@ class LedgerDB:
             self._tx_depth = 0
 
     def init_schema(self) -> None:
-        """Create all 14 schema tables and indexes if they do not exist."""
+        """Create all schema tables and indexes if they do not exist."""
         # executescript() issues an implicit COMMIT for DDL, so this stays on self.conn.
         with self.conn:
             self.conn.executescript(
@@ -260,14 +258,6 @@ class LedgerDB:
                     updated_at TEXT NOT NULL
                 );
 
-                CREATE TABLE IF NOT EXISTS wave_products (
-                    wave_id TEXT PRIMARY KEY,
-                    name TEXT NOT NULL,
-                    unit_price TEXT NOT NULL,
-                    income_account_id TEXT NOT NULL DEFAULT '',
-                    updated_at TEXT NOT NULL
-                );
-
                 CREATE TABLE IF NOT EXISTS staged_transactions (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     external_id TEXT NOT NULL UNIQUE,
@@ -284,25 +274,6 @@ class LedgerDB:
                     status TEXT NOT NULL DEFAULT 'staged',
                     review_reason TEXT NOT NULL DEFAULT '',
                     wave_transaction_id TEXT,
-                    last_error TEXT,
-                    created_at TEXT NOT NULL,
-                    updated_at TEXT NOT NULL
-                );
-
-                CREATE TABLE IF NOT EXISTS staged_invoices (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    external_id TEXT NOT NULL UNIQUE,
-                    harvest_invoice_id INTEGER NOT NULL UNIQUE REFERENCES harvest_invoices(id),
-                    invoice_number TEXT NOT NULL,
-                    customer_name TEXT NOT NULL,
-                    wave_customer_id TEXT,
-                    invoice_date TEXT NOT NULL,
-                    due_date TEXT NOT NULL,
-                    wave_status TEXT NOT NULL,
-                    items_json TEXT NOT NULL,
-                    total_amount TEXT NOT NULL,
-                    status TEXT NOT NULL DEFAULT 'staged',
-                    wave_invoice_id TEXT,
                     last_error TEXT,
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL
@@ -1031,32 +1002,6 @@ class LedgerDB:
                 )
         return len(customers)
 
-    def upsert_wave_products(self, products: list[WaveProduct]) -> int:
-        """Upsert cached Wave products."""
-        now = utc_now_iso()
-        with self.transaction():
-            for prod in products:
-                self.conn.execute(
-                    """
-                    INSERT INTO wave_products (
-                        wave_id, name, unit_price, income_account_id, updated_at
-                    ) VALUES (?, ?, ?, ?, ?)
-                    ON CONFLICT(wave_id) DO UPDATE SET
-                        name = excluded.name,
-                        unit_price = excluded.unit_price,
-                        income_account_id = excluded.income_account_id,
-                        updated_at = excluded.updated_at
-                    """,
-                    (
-                        prod.wave_id,
-                        prod.name,
-                        format_money(prod.unit_price),
-                        prod.income_account_id,
-                        now,
-                    ),
-                )
-        return len(products)
-
     def list_wave_accounts(self) -> list[WaveAccount]:
         """List all cached Wave accounts."""
         rows = self.conn.execute("SELECT * FROM wave_accounts ORDER BY name ASC").fetchall()
@@ -1109,22 +1054,8 @@ class LedgerDB:
             wave_id=str(row["wave_id"]), name=str(row["name"]), email=str(row["email"])
         )
 
-    def find_wave_product_by_name(self, name: str) -> WaveProduct | None:
-        """Lookup cached Wave product case-insensitively by name."""
-        row = self.conn.execute(
-            "SELECT * FROM wave_products WHERE LOWER(name) = LOWER(?)", (name.strip(),)
-        ).fetchone()
-        if not row:
-            return None
-        return WaveProduct(
-            wave_id=str(row["wave_id"]),
-            name=str(row["name"]),
-            unit_price=parse_money(row["unit_price"]),
-            income_account_id=str(row["income_account_id"]),
-        )
-
     # ------------------------------------------------------------------
-    # Staged transactions & invoices
+    # Staged transactions
     # ------------------------------------------------------------------
 
     def upsert_staged_transaction(self, tx: StagedTransaction) -> int:
@@ -1208,77 +1139,6 @@ class LedgerDB:
             assert cur.lastrowid is not None
             return int(cur.lastrowid)
 
-    def upsert_staged_invoice(self, inv: StagedInvoice) -> int:
-        """Upsert a staged invoice unless it has already been pushed or skipped."""
-        now = utc_now_iso()
-        existing = self.conn.execute(
-            "SELECT id, status FROM staged_invoices WHERE harvest_invoice_id = ?",
-            (inv.harvest_invoice_id,),
-        ).fetchone()
-        items_json = json.dumps(inv.items)
-
-        if existing:
-            existing_id = int(existing["id"])
-            if str(existing["status"]) in {"pushed", "skipped", "outcome_unknown"}:
-                return existing_id
-            with self.transaction():
-                self.conn.execute(
-                    """
-                    UPDATE staged_invoices
-                    SET external_id = ?, invoice_number = ?, customer_name = ?,
-                        wave_customer_id = ?, invoice_date = ?, due_date = ?,
-                        wave_status = ?, items_json = ?, total_amount = ?,
-                        status = ?, last_error = NULL, updated_at = ?
-                    WHERE id = ?
-                    """,
-                    (
-                        inv.external_id,
-                        inv.invoice_number,
-                        inv.customer_name,
-                        inv.wave_customer_id,
-                        inv.invoice_date,
-                        inv.due_date,
-                        inv.wave_status,
-                        items_json,
-                        format_money(inv.total_amount),
-                        inv.status,
-                        now,
-                        existing_id,
-                    ),
-                )
-            return existing_id
-
-        with self.transaction():
-            cur = self.conn.execute(
-                """
-                INSERT INTO staged_invoices (
-                    external_id, harvest_invoice_id, invoice_number, customer_name,
-                    wave_customer_id, invoice_date, due_date, wave_status,
-                    items_json, total_amount, status, wave_invoice_id, last_error,
-                    created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    inv.external_id,
-                    inv.harvest_invoice_id,
-                    inv.invoice_number,
-                    inv.customer_name,
-                    inv.wave_customer_id,
-                    inv.invoice_date,
-                    inv.due_date,
-                    inv.wave_status,
-                    items_json,
-                    format_money(inv.total_amount),
-                    inv.status,
-                    inv.wave_invoice_id,
-                    inv.last_error,
-                    now,
-                    now,
-                ),
-            )
-            assert cur.lastrowid is not None
-            return int(cur.lastrowid)
-
     @staticmethod
     def _row_to_staged_tx(row: sqlite3.Row) -> StagedTransaction:
         items_raw = json.loads(row["line_items_json"])
@@ -1301,25 +1161,6 @@ class LedgerDB:
             last_error=row["last_error"],
         )
 
-    @staticmethod
-    def _row_to_staged_invoice(row: sqlite3.Row) -> StagedInvoice:
-        return StagedInvoice(
-            id=int(row["id"]),
-            external_id=str(row["external_id"]),
-            harvest_invoice_id=int(row["harvest_invoice_id"]),
-            invoice_number=str(row["invoice_number"]),
-            customer_name=str(row["customer_name"]),
-            wave_customer_id=row["wave_customer_id"],
-            invoice_date=str(row["invoice_date"]),
-            due_date=str(row["due_date"]),
-            wave_status=str(row["wave_status"]),
-            items=json.loads(row["items_json"]),
-            total_amount=parse_money(row["total_amount"]),
-            status=str(row["status"]),
-            wave_invoice_id=row["wave_invoice_id"],
-            last_error=row["last_error"],
-        )
-
     def list_staged_transactions(
         self, status: str | None = None, period_prefix: str | None = None
     ) -> list[StagedTransaction]:
@@ -1339,36 +1180,6 @@ class LedgerDB:
         ).fetchall()
         return [self._row_to_staged_tx(row) for row in rows]
 
-    def list_staged_invoices(
-        self, status: str | None = None, period_prefix: str | None = None
-    ) -> list[StagedInvoice]:
-        """List staged invoices optionally filtered by status or YYYY-MM prefix."""
-        clauses: list[str] = []
-        params: list[Any] = []
-        if status and status != "all":
-            clauses.append("status = ?")
-            params.append(status)
-        if period_prefix:
-            clauses.append("invoice_date LIKE ?")
-            params.append(f"{period_prefix}%")
-        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
-        rows = self.conn.execute(
-            f"SELECT * FROM staged_invoices {where} ORDER BY invoice_date ASC, id ASC",
-            params,
-        ).fetchall()
-        return [self._row_to_staged_invoice(row) for row in rows]
-
-    def delete_unpushed_staged_invoices(self) -> int:
-        """Delete unpushed staged invoices when invoice mirroring is disabled.
-
-        ``outcome_unknown`` invoices are kept: they may exist in Wave and need checking.
-        """
-        with self.transaction():
-            cur = self.conn.execute(
-                "DELETE FROM staged_invoices WHERE status NOT IN ('pushed', 'outcome_unknown')"
-            )
-            return int(cur.rowcount)
-
     def get_staged_transaction(self, staged_tx_id: int) -> StagedTransaction | None:
         """Fetch a single staged transaction by ID."""
         row = self.conn.execute(
@@ -1376,16 +1187,10 @@ class LedgerDB:
         ).fetchone()
         return self._row_to_staged_tx(row) if row else None
 
-    def approve_staged(
-        self,
-        all_staged: bool = False,
-        tx_ids: list[int] | None = None,
-        invoice_ids: list[int] | None = None,
-    ) -> tuple[int, int]:
-        """Approve staged transactions and/or invoices. Returns (tx_approved, inv_approved)."""
+    def approve_staged(self, all_staged: bool = False, tx_ids: list[int] | None = None) -> int:
+        """Approve staged transactions. Returns the number approved."""
         now = utc_now_iso()
         tx_count = 0
-        inv_count = 0
         with self.transaction():
             if all_staged:
                 cur = self.conn.execute(
@@ -1397,15 +1202,6 @@ class LedgerDB:
                     (now,),
                 )
                 tx_count += cur.rowcount
-                cur_inv = self.conn.execute(
-                    """
-                    UPDATE staged_invoices
-                    SET status = 'approved', updated_at = ?
-                    WHERE status = 'staged'
-                    """,
-                    (now,),
-                )
-                inv_count += cur_inv.rowcount
 
             if tx_ids:
                 placeholders = ",".join("?" for _ in tx_ids)
@@ -1420,20 +1216,7 @@ class LedgerDB:
                 )
                 tx_count += cur.rowcount
 
-            if invoice_ids:
-                placeholders = ",".join("?" for _ in invoice_ids)
-                cur_inv = self.conn.execute(
-                    f"""
-                    UPDATE staged_invoices
-                    SET status = 'approved', updated_at = ?
-                    WHERE id IN ({placeholders})
-                      AND status IN ('staged', 'failed', 'outcome_unknown')
-                    """,
-                    [now, *invoice_ids],
-                )
-                inv_count += cur_inv.rowcount
-
-        return tx_count, inv_count
+        return tx_count
 
     def recategorize_staged_tx(
         self,
@@ -1479,51 +1262,35 @@ class LedgerDB:
         assert updated is not None
         return updated
 
-    def mark_staged_pushed(self, kind: str, staged_id: int, wave_id: str) -> None:
-        """Mark a staged invoice or transaction as pushed with its remote Wave ID."""
-        now = utc_now_iso()
-        with self.transaction():
-            if kind == "transaction":
-                self.conn.execute(
-                    """
-                    UPDATE staged_transactions
-                    SET status = 'pushed', wave_transaction_id = ?,
-                        last_error = NULL, updated_at = ?
-                    WHERE id = ?
-                    """,
-                    (wave_id, now, staged_id),
-                )
-            elif kind == "invoice":
-                self.conn.execute(
-                    """
-                    UPDATE staged_invoices
-                    SET status = 'pushed', wave_invoice_id = ?, last_error = NULL, updated_at = ?
-                    WHERE id = ?
-                    """,
-                    (wave_id, now, staged_id),
-                )
-            else:
-                raise ValueError(f"Unknown staged kind: {kind!r}")
-
-    def mark_staged_failed(self, kind: str, staged_id: int, error: str) -> None:
-        """Mark a staged invoice or transaction as failed with an error message."""
-        self._mark_staged_error(kind, staged_id, "failed", error)
-
-    def mark_staged_outcome_unknown(self, kind: str, staged_id: int, error: str) -> None:
-        """Mark a staged record whose Wave create may or may not have been applied.
-
-        Re-planning, ``approve --all-staged`` and recategorizing leave it alone; only an
-        explicit ``approve --tx``/``--invoice`` re-queues it, after the user has checked Wave.
-        """
-        self._mark_staged_error(kind, staged_id, "outcome_unknown", error)
-
-    def _mark_staged_error(self, kind: str, staged_id: int, status: str, error: str) -> None:
-        tables = {"transaction": "staged_transactions", "invoice": "staged_invoices"}
-        if kind not in tables:
-            raise ValueError(f"Unknown staged kind: {kind!r}")
+    def mark_staged_pushed(self, staged_id: int, wave_id: str) -> None:
+        """Mark a staged transaction as pushed with its remote Wave ID."""
         with self.transaction():
             self.conn.execute(
-                f"UPDATE {tables[kind]} SET status = ?, last_error = ?, updated_at = ?"
+                """
+                UPDATE staged_transactions
+                SET status = 'pushed', wave_transaction_id = ?,
+                    last_error = NULL, updated_at = ?
+                WHERE id = ?
+                """,
+                (wave_id, utc_now_iso(), staged_id),
+            )
+
+    def mark_staged_failed(self, staged_id: int, error: str) -> None:
+        """Mark a staged transaction as failed with an error message."""
+        self._mark_staged_error(staged_id, "failed", error)
+
+    def mark_staged_outcome_unknown(self, staged_id: int, error: str) -> None:
+        """Mark a staged transaction whose Wave create may or may not have been applied.
+
+        Re-planning, ``approve --all-staged`` and recategorizing leave it alone; only an
+        explicit ``approve --tx`` re-queues it, after the user has checked Wave.
+        """
+        self._mark_staged_error(staged_id, "outcome_unknown", error)
+
+    def _mark_staged_error(self, staged_id: int, status: str, error: str) -> None:
+        with self.transaction():
+            self.conn.execute(
+                "UPDATE staged_transactions SET status = ?, last_error = ?, updated_at = ?"
                 " WHERE id = ?",
                 (status, error, utc_now_iso(), staged_id),
             )

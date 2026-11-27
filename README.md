@@ -24,10 +24,11 @@ uv sync --extra dev
 uv run ledgerdemain init
 
 # 2. Store API tokens in macOS Keychain & customize ledgerdemain.toml / rules.toml
-# 3. Sync your Wave Chart of Accounts, customers, and products
+# 3. Sync your Wave Chart of Accounts and customers
 uv run ledgerdemain wave sync-meta
 
-# 4. Ingest from APIs and/or drop CSV/OFX files into inbox/<source>/
+# 4. Ingest from the Harvest and Grasshopper APIs, plus Capital One OFX and Gusto CSV files
+#    dropped into inbox/capital_one/ and inbox/gusto/
 uv run ledgerdemain ingest all
 
 # 5. Reconcile Harvest deposits, Gusto payroll debits, and Capital One transfers
@@ -73,7 +74,7 @@ uv run --extra dev pytest -v
 - Requires an active **Wave Pro** (or Advisors) plan with newer accounting (`isClassicAccounting = false`).
 - Store `WAVE_ACCESS_TOKEN` in macOS Keychain under service `ledgerdemain` (`${keychain:WAVE_ACCESS_TOKEN}`), and set `WAVE_BUSINESS_ID` in `os.environ` (or directly in `ledgerdemain.toml`).
 - Run `uv run ledgerdemain wave list-businesses` if you need to look up your `WAVE_BUSINESS_ID`.
-- Run `uv run ledgerdemain wave sync-meta` to cache your Chart of Accounts, customers, and products, then map your account names/IDs under `[accounts]` in `ledgerdemain.toml`.
+- Run `uv run ledgerdemain wave sync-meta` to cache your Chart of Accounts and customers, then map your account names/IDs under `[accounts]` in `ledgerdemain.toml`.
 
 ### 2. Harvest (REST API v2)
 - Generate a Personal Access Token and Account ID in Harvest Developers (`https://id.getharvest.com/developers`).
@@ -81,8 +82,8 @@ uv run --extra dev pytest -v
 
 ### 3. Grasshopper Bank (Multi-Account Read-Only API)
 - In Grasshopper online banking, go to **Settings -> API Banking**, accept the terms, **whitelist your static IP address**, and store both the Bearer Token (`GRASSHOPPER_ACCESS_TOKEN`) and Header Secret (`GRASSHOPPER_HEADER_SECRET`) in macOS Keychain (`${keychain:GRASSHOPPER_ACCESS_TOKEN}`, `${keychain:GRASSHOPPER_HEADER_SECRET}`).
-- Run `uv run ledgerdemain grasshopper list-accounts` to retrieve the `id` for both your **Savings** and **Money Market** accounts, then map them under `[[grasshopper.accounts]]` in `ledgerdemain.toml` (`grasshopper_savings`, `grasshopper_money_market`).
-- Grasshopper is ingested only through the API. Internal Savings <-> Money Market transfers reconcile automatically. On the first sync in a fresh database, pass `ingest grasshopper --from YYYY-MM-DD` to set how far back to go. Files left in `inbox/grasshopper/` are reported as failures by `ingest all`.
+- Run `uv run ledgerdemain grasshopper list-accounts` to retrieve the `id` for both your **Checking** and **Money Market** accounts, then map them under `[[grasshopper.accounts]]` in `ledgerdemain.toml` (`grasshopper_checking`, `grasshopper_money_market`).
+- Grasshopper is ingested only through the API. Internal Checking <-> Money Market transfers reconcile automatically. On the first sync in a fresh database, pass `ingest grasshopper --from YYYY-MM-DD` to set how far back to go. Files left in `inbox/grasshopper/` are reported as failures by `ingest all`.
 
 ### 4. Capital One Credit Card (OFX)
 - Export **OFX (OFX 2.x XML / Quicken / QFX / QBO)** from Capital One and place it in `inbox/capital_one/` (or pass `--file`). Capital One OFX exports include unique `<FITID>` IDs for duplicate-safe overlapping downloads, both transaction date (`<DTUSER>`) and posted date (`<DTPOSTED>`), card last-4 (`<ACCTID>`), and statement `<LEDGERBAL>`.
@@ -96,18 +97,31 @@ uv run --extra dev pytest -v
 
 ## Accounting Workflows
 
-### Harvest Invoices: Accrual vs Cash Basis
-- **Accrual / Mirrored Invoices (`mirror_harvest_invoices = true`, default)**:
-  - `invoiceCreate` mirrors non-draft Harvest invoices into Wave.
-  - `mirrored_invoice_deposit_strategy = "ar_clearing"` (default) posts matched Grasshopper deposits against `invoice_payments_clearing` (so revenue is **never** double-counted!).
-  - `mirrored_invoice_deposit_strategy = "manual_ui_payment"` holds matched deposits in a checklist so you record the payment directly against the Wave invoice in the UI.
-- **Cash Basis (`mirror_harvest_invoices = false`, `mirrored_invoice_deposit_strategy = "direct_income"`)**:
-  - Matched Grasshopper deposits post directly to `revenue_default` (and split any payment processor fee to `merchant_fees`).
+The accounting treatment is fixed; there are no strategy settings.
 
-### Credit Card Payments (`transfer_strategy`)
-- Wave's GraphQL API does not provide a native bank-to-credit-card transfer mutation.
-- `transfer_strategy = "manual_transfer"` (default) pairs Grasshopper's Capital One payment withdrawal with Capital One's payment credit, prevents double-posting them as expenses/income, and lists them in `report`'s Wave Manual Action Checklist.
-- `transfer_strategy = "clearing_account"` posts both legs against `cc_transfer_clearing` so the clearing account nets to `$0.00`.
+- **Harvest invoices are not created in Wave.** They are ingested and matched to Grasshopper deposits, but Wave only receives the deposit. A matched deposit posts directly to `revenue_default` as income (one line per invoice, with any payment processor fee split to `merchant_fees`). Income lines carry the Wave customer when the client name matches a customer cached by `wave sync-meta`; otherwise the customer is created at push time.
+- **Transfers between your own accounts are recorded by hand.** Wave's GraphQL API has no transfer mutation. Matched transfers (Grasshopper to Capital One card payments, and Checking <-> Money Market) are staged as `manual_transfer_required`, never pushed, and listed in the `report` Wave Manual Action Checklist so you can enter them as Transfers in the Wave UI.
+- **Payroll clearing accounts net to zero.** `Payroll Taxes Payable` and `Payroll Benefits Payable` clear to `$0.00` once the Gusto net pay, tax, and benefit debits are matched.
+
+Invoice mirroring (accrual basis) was removed. See [docs/FUTURE_FEATURES.md](docs/FUTURE_FEATURES.md) for how it worked and how to bring it back.
+
+---
+
+## If a push stops with an unknown outcome
+
+If a Wave create request times out or returns a response that cannot be read, Wave may have applied it. `push` stops without sending anything further and marks the staged transaction `outcome_unknown` (visible with `ledgerdemain review --status outcome_unknown`). Re-planning and `approve --all-staged` leave it alone so it is never sent twice by accident.
+
+1. Check Wave for the record. The error message names the `externalId` (`ld:tx:...`) to look for; a customer is found by name.
+2. Run `ledgerdemain wave sync-meta` so a customer that was created is reused instead of created again.
+3. If the transaction exists in Wave, leave it as is. If it is missing, re-queue it with `ledgerdemain approve --tx ID` and push again.
+
+If Wave rejects a request outright (an HTTP or GraphQL error), `push` also stops, but nothing is marked. Fix the cause and push again.
+
+## Exit codes and failures
+
+- `ingest all` reports every unsupported or failed inbox file (any source) and every API failure (Harvest or Grasshopper) per item on stderr, still ingests everything else, and exits 2 if anything failed. Rerunning is safe because ingestion is idempotent.
+- Single-source commands (`ingest harvest`, `wave sync-meta`, and so on) print an `Error:` line and exit 2 on configuration errors, HTTP errors, GraphQL errors, and Wave API errors.
+- `push` exits 1 if any record failed or the push stopped early.
 
 ---
 
@@ -117,13 +131,13 @@ uv run --extra dev pytest -v
 |---|---|
 | `ledgerdemain init [--dir PATH]` | Initialize config, rules, inbox folders, and SQLite DB |
 | `ledgerdemain wave list-businesses` | List Wave businesses accessible to your token |
-| `ledgerdemain wave sync-meta` | Cache Wave Chart of Accounts, customers, and products |
+| `ledgerdemain wave sync-meta` | Cache Wave Chart of Accounts and customers |
 | `ledgerdemain grasshopper list-accounts` | List Grasshopper Bank accounts accessible to your token |
 | `ledgerdemain ingest harvest\|grasshopper\|capital-one\|gusto\|all` | Ingest from the Harvest and Grasshopper APIs, or from Capital One OFX and Gusto CSV files (`all` also reports leftover files in `inbox/harvest/` and `inbox/grasshopper/`) |
 | `ledgerdemain reconcile [--confirm-high-confidence]` | Match deposits, Gusto debits, and CC transfers |
-| `ledgerdemain plan` | Stage balanced Wave transactions and mirrored invoices |
+| `ledgerdemain plan` | Stage balanced Wave transactions (transfers between own accounts are staged for manual entry) |
 | `ledgerdemain review [--status ...] [--json]` | Inspect staged, review-needed, manual, or failed items |
-| `ledgerdemain approve [--all-staged] [--tx ...] [--invoice ...] [--match ...]` | Confirm matches or approve staged items |
+| `ledgerdemain approve [--all-staged] [--tx ...] [--match ...]` | Confirm matches or approve staged transactions (`--tx` also re-queues a failed or `outcome_unknown` one) |
 | `ledgerdemain recategorize --tx ID --account KEY [--note TEXT]` | Reassign account category and re-stage |
-| `ledgerdemain push [--dry-run] [--invoices-only \| --transactions-only]` | Preview JSON payloads or push live to Wave |
+| `ledgerdemain push [--dry-run]` | Preview JSON payloads or push approved transactions live to Wave |
 | `ledgerdemain report [--period YYYY-MM] [--format text\|json]` | Summary, AR status, Gusto clearing check, Wave checklist |

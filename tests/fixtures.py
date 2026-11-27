@@ -16,9 +16,6 @@ from ledgerdemain.money import ZERO, parse_money
 def write_test_workspace_config(
     tmp_dir: Path,
     *,
-    mirror_harvest_invoices: bool = True,
-    deposit_strategy: str = "ar_clearing",
-    transfer_strategy: str = "manual_transfer",
     include_api_creds: bool = True,
 ) -> Path:
     """Write a complete test ledgerdemain.toml and rules.toml in tmp_dir."""
@@ -41,10 +38,6 @@ rules_path = "rules.toml"
 currency = "USD"
 
 [accounting]
-mirror_harvest_invoices = {"true" if mirror_harvest_invoices else "false"}
-mirrored_invoice_deposit_strategy = "{deposit_strategy}"
-wave_invoice_create_status = "SAVED"
-transfer_strategy = "{transfer_strategy}"
 deposit_match_window_days = 7
 payroll_match_window_days = 5
 transfer_match_window_days = 5
@@ -54,7 +47,6 @@ auto_confirm_threshold = 0.90
 endpoint = "https://gql.waveapps.com/graphql/public"
 business_id = "{wave_biz}"
 access_token = "{wave_tok}"
-default_product_name = "Consulting Services"
 
 [harvest]
 base_url = "https://api.harvestapp.com/v2"
@@ -73,7 +65,6 @@ header_secret_name = "X-API-Secret"
 grasshopper_checking = "Grasshopper Checking"
 capital_one_card = "Capital One Credit Card"
 revenue_default = "Sales"
-invoice_payments_clearing = "Invoice Payments Clearing"
 merchant_fees = "Merchant Processing Fees"
 payroll_gross_wages = "Payroll - Gross Wages"
 payroll_reimbursements = "Employee Reimbursements"
@@ -83,7 +74,6 @@ payroll_taxes_payable = "Payroll Taxes Payable"
 payroll_benefits_payable = "Payroll Benefits Payable"
 payroll_processing_fees = "Payroll Processing Fees"
 contractors_expense = "Contractors"
-cc_transfer_clearing = "Credit Card Payment Clearing"
 software_subscriptions = "Software & Subscriptions"
 cloud_hosting = "Cloud Hosting & Infrastructure"
 office_supplies = "Office Supplies"
@@ -278,9 +268,6 @@ class MockWaveTransport:
             self._acc("acc-gh", "Grasshopper Checking", "ASSET", "CASH_AND_BANK", "DEBIT"),
             self._acc("acc-co", "Capital One Credit Card", "LIABILITY", "CREDIT_CARD", "CREDIT"),
             self._acc("acc-rev", "Sales", "INCOME", "INCOME", "CREDIT"),
-            self._acc(
-                "acc-ar-clr", "Invoice Payments Clearing", "ASSET", "OTHER_CURRENT_ASSET", "DEBIT"
-            ),
             self._acc("acc-fees", "Merchant Processing Fees", "EXPENSE", "EXPENSE", "DEBIT"),
             self._acc("acc-wages", "Payroll - Gross Wages", "EXPENSE", "EXPENSE", "DEBIT"),
             self._acc("acc-reimb", "Employee Reimbursements", "EXPENSE", "EXPENSE", "DEBIT"),
@@ -302,13 +289,6 @@ class MockWaveTransport:
             ),
             self._acc("acc-payfee", "Payroll Processing Fees", "EXPENSE", "EXPENSE", "DEBIT"),
             self._acc("acc-contr", "Contractors", "EXPENSE", "EXPENSE", "DEBIT"),
-            self._acc(
-                "acc-cc-clr",
-                "Credit Card Payment Clearing",
-                "ASSET",
-                "OTHER_CURRENT_ASSET",
-                "DEBIT",
-            ),
             self._acc("acc-soft", "Software & Subscriptions", "EXPENSE", "EXPENSE", "DEBIT"),
             self._acc("acc-cloud", "Cloud Hosting & Infrastructure", "EXPENSE", "EXPENSE", "DEBIT"),
             self._acc("acc-meals", "Meals & Entertainment", "EXPENSE", "EXPENSE", "DEBIT"),
@@ -319,8 +299,6 @@ class MockWaveTransport:
         self.customers: list[dict[str, Any]] = [
             {"id": "cust-acme", "name": "Acme Corp", "email": "ap@acme.example"}
         ]
-        self.products: list[dict[str, Any]] = []
-        self.invoices: list[dict[str, Any]] = []
         self.transactions: list[dict[str, Any]] = []
         self.seen_external_ids: set[str] = set()
         self.fail_next_tx_error: str | None = None
@@ -373,8 +351,6 @@ class MockWaveTransport:
             return self._conn_ok("accounts", self.accounts)
         if "ListCustomers" in query:
             return self._conn_ok("customers", self.customers)
-        if "ListProducts" in query:
-            return self._conn_ok("products", self.products)
         if "CustomerCreate" in query:
             inp = variables["input"]
             node = {
@@ -385,50 +361,6 @@ class MockWaveTransport:
             self.customers.append(node)
             return self._json_ok(
                 {"customerCreate": {"didSucceed": True, "inputErrors": [], "customer": node}}
-            )
-        if "ProductCreate" in query:
-            inp = variables["input"]
-            node = {
-                "id": f"prod-{len(self.products) + 1}",
-                "name": inp["name"],
-                "unitPrice": inp.get("unitPrice", "0.00"),
-                "incomeAccount": {"id": inp["incomeAccountId"], "name": "Sales"},
-            }
-            self.products.append(node)
-            return self._json_ok(
-                {"productCreate": {"didSucceed": True, "inputErrors": [], "product": node}}
-            )
-        if "InvoiceCreate" in query:
-            inp = variables["input"]
-            for idx, item in enumerate(inp.get("items", [])):
-                if "price" in item or "unitPrice" not in item:
-                    return self._json_ok(
-                        {
-                            "invoiceCreate": {
-                                "didSucceed": False,
-                                "inputErrors": [
-                                    {
-                                        "path": ["input", "items", idx],
-                                        "code": "INVALID_FIELD",
-                                        "message": "InvoiceCreateItemInput requires unitPrice",
-                                    }
-                                ],
-                                "invoice": None,
-                            }
-                        }
-                    )
-            node = {
-                "id": f"winv-{len(self.invoices) + 1}",
-                "invoiceNumber": inp.get("invoiceNumber", ""),
-                "invoiceDate": inp.get("invoiceDate", ""),
-                "dueDate": inp.get("dueDate", ""),
-                "status": inp.get("status", "SAVED"),
-                "total": {"value": "0.00"},
-                "customer": {"id": inp["customerId"], "name": ""},
-            }
-            self.invoices.append(node)
-            return self._json_ok(
-                {"invoiceCreate": {"didSucceed": True, "inputErrors": [], "invoice": node}}
             )
         if "MoneyTransactionCreate" in query:
             inp = variables["input"]

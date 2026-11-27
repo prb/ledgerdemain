@@ -8,10 +8,7 @@ from typing import Any
 from ledgerdemain.config import AppConfig, ConfigError
 from ledgerdemain.db import LedgerDB
 from ledgerdemain.http_client import GraphQLError, HttpError, OutcomeUnknownError
-from ledgerdemain.models import (
-    StagedInvoice,
-    StagedTransaction,
-)
+from ledgerdemain.models import StagedTransaction
 from ledgerdemain.money import format_money
 from ledgerdemain.planner import DEFAULT_NORMAL_BALANCE, BalanceError, validate_double_entry_balance
 from ledgerdemain.wave.client import WaveApiError, WaveGraphQLClient
@@ -25,7 +22,6 @@ class MetadataSyncSummary:
     is_classic_accounting: bool
     accounts_synced: int
     customers_synced: int
-    products_synced: int
     warnings: list[str] = field(default_factory=list)
 
 
@@ -34,12 +30,9 @@ class PushSummary:
     """Summary returned by Wave dry-run or live push."""
 
     dry_run: bool
-    invoices_pushed: int = 0
-    invoices_failed: int = 0
     transactions_pushed: int = 0
     transactions_failed: int = 0
     would_create_customers: list[str] = field(default_factory=list)
-    would_create_products: list[str] = field(default_factory=list)
     dry_run_payloads: list[dict[str, Any]] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
@@ -71,7 +64,7 @@ class WaveSyncService:
         return self.client
 
     def sync_metadata(self) -> MetadataSyncSummary:
-        """Pull Wave business info, accounts, customers, and products into SQLite cache."""
+        """Pull Wave business info, accounts and customers into SQLite cache."""
         client = self._require_client()
         biz_id = self.config.wave.business_id
         biz = client.get_business(biz_id)
@@ -85,46 +78,35 @@ class WaveSyncService:
 
         accounts = client.list_accounts(biz_id, is_archived=False)
         customers = client.list_customers(biz_id)
-        products = client.list_products(biz_id)
 
         self.db.upsert_wave_accounts(accounts)
         self.db.upsert_wave_customers(customers)
-        self.db.upsert_wave_products(products)
 
         return MetadataSyncSummary(
             business_name=str(biz.get("name") or biz_id),
             is_classic_accounting=is_classic,
             accounts_synced=len(accounts),
             customers_synced=len(customers),
-            products_synced=len(products),
             warnings=warnings,
         )
 
-    def push(
-        self,
-        dry_run: bool = False,
-        invoices_only: bool = False,
-        transactions_only: bool = False,
-    ) -> PushSummary:
-        """Validate and push approved staged invoices and/or transactions to Wave.
+    def push(self, dry_run: bool = False) -> PushSummary:
+        """Validate and push approved staged transactions to Wave.
 
         If a create request fails with an unknown outcome (it may have been applied in Wave),
-        the push stops so no further records are sent. A staged invoice or transaction in that
-        state is marked ``outcome_unknown``, which only an explicit ``approve --tx``/``--invoice``
-        re-queues. If Wave rejects a request outright (an HTTP or GraphQL error), the push stops
-        and nothing is marked, so the same records can be pushed again once the cause is fixed.
+        the push stops so no further records are sent. A staged transaction in that state is
+        marked ``outcome_unknown``, which only an explicit ``approve --tx`` re-queues.
+        If Wave rejects a request outright (an HTTP or GraphQL error), the push stops and
+        nothing is marked, so the same records can be pushed again once the cause is fixed.
         """
-        if invoices_only and transactions_only:
-            raise ValueError("Cannot pass both invoices_only and transactions_only")
-
         summary = PushSummary(dry_run=dry_run)
         try:
-            self._push_approved(summary, dry_run, invoices_only, transactions_only)
+            self._push_approved(summary, dry_run)
         except OutcomeUnknownError as err:
             summary.errors.append(
                 f"Push stopped after a Wave request with an unknown outcome ({err}). "
                 "Remaining approved records were not sent. Run 'ledgerdemain wave sync-meta' "
-                "before pushing again so a customer or product that was created is reused."
+                "before pushing again so a customer that was created is reused."
             )
         except (HttpError, GraphQLError) as err:
             summary.errors.append(
@@ -133,20 +115,11 @@ class WaveSyncService:
             )
         return summary
 
-    def _push_approved(
-        self,
-        summary: PushSummary,
-        dry_run: bool,
-        invoices_only: bool,
-        transactions_only: bool,
-    ) -> None:
+    def _push_approved(self, summary: PushSummary, dry_run: bool) -> None:
         if not dry_run:
             self._require_client()
 
-        approved_invoices = (
-            [] if transactions_only else self.db.list_staged_invoices(status="approved")
-        )
-        approved_txs = [] if invoices_only else self.db.list_staged_transactions(status="approved")
+        approved_txs = self.db.list_staged_transactions(status="approved")
 
         cached_accounts = self.db.list_wave_accounts()
         has_cached_accounts = len(cached_accounts) > 0
@@ -161,94 +134,9 @@ class WaveSyncService:
             )
 
         account_id_map = self._resolve_required_accounts(
-            approved_invoices=approved_invoices,
             approved_txs=approved_txs,
             allow_placeholders=dry_run and not has_cached_accounts,
         )
-
-        # Ensure default product when pushing invoices
-        default_product_id: str | None = None
-        if approved_invoices:
-            prod_name = self.config.wave.default_product_name
-            existing_prod = self.db.find_wave_product_by_name(prod_name)
-            if existing_prod is not None:
-                default_product_id = existing_prod.wave_id
-            elif dry_run:
-                default_product_id = f"<WOULD_CREATE_PRODUCT:{prod_name}>"
-                if prod_name not in summary.would_create_products:
-                    summary.would_create_products.append(prod_name)
-            else:
-                rev_id = account_id_map["revenue_default"]
-                created_prod = self._require_client().create_product(
-                    business_id=self.config.wave.business_id,
-                    name=prod_name,
-                    income_account_id=rev_id,
-                )
-                self.db.upsert_wave_products([created_prod])
-                default_product_id = created_prod.wave_id
-
-        # Push approved invoices
-        for inv in approved_invoices:
-            assert inv.id is not None
-            cust_id = self._resolve_or_create_customer(
-                customer_name=inv.customer_name,
-                dry_run=dry_run,
-                summary=summary,
-            )
-            items_payload = [
-                {
-                    "productId": default_product_id,
-                    "description": str(item.get("description") or ""),
-                    "quantity": str(item.get("quantity") or "1"),
-                    "unitPrice": str(item.get("unitPrice") or "0.00"),
-                }
-                for item in inv.items
-            ]
-            if dry_run:
-                summary.dry_run_payloads.append(
-                    {
-                        "operation": "invoiceCreate",
-                        "staged_invoice_id": inv.id,
-                        "input": {
-                            "businessId": self.config.wave.business_id or "<WAVE_BUSINESS_ID>",
-                            "customerId": cust_id,
-                            "invoiceNumber": inv.invoice_number,
-                            "invoiceDate": inv.invoice_date,
-                            "dueDate": inv.due_date,
-                            "status": inv.wave_status,
-                            "items": items_payload,
-                        },
-                    }
-                )
-                summary.invoices_pushed += 1
-                continue
-
-            try:
-                created = self._require_client().create_invoice(
-                    business_id=self.config.wave.business_id,
-                    customer_id=cust_id,
-                    invoice_number=inv.invoice_number,
-                    invoice_date=inv.invoice_date,
-                    due_date=inv.due_date,
-                    items=items_payload,
-                    status=inv.wave_status,
-                )
-                self.db.mark_staged_pushed("invoice", inv.id, str(created["id"]))
-                summary.invoices_pushed += 1
-            except WaveApiError as err:
-                self.db.mark_staged_failed("invoice", inv.id, str(err))
-                summary.invoices_failed += 1
-                summary.errors.append(f"Invoice #{inv.invoice_number}: {err}")
-            except OutcomeUnknownError as err:
-                msg = (
-                    f"Outcome unknown, invoice may exist in Wave; check for invoice "
-                    f"#{inv.invoice_number} and run 'approve --invoice {inv.id}' only if it "
-                    f"is missing: {err}"
-                )
-                self.db.mark_staged_outcome_unknown("invoice", inv.id, msg)
-                summary.invoices_failed += 1
-                summary.errors.append(f"Invoice #{inv.invoice_number}: {msg}")
-                raise
 
         # Push approved money transactions
         for tx in approved_txs:
@@ -264,7 +152,7 @@ class WaveSyncService:
                 )
             except BalanceError as err:
                 if not dry_run:
-                    self.db.mark_staged_failed("transaction", tx.id, str(err))
+                    self.db.mark_staged_failed(tx.id, str(err))
                 summary.transactions_failed += 1
                 summary.errors.append(f"Staged tx #{tx.id} ({tx.description}): {err}")
                 continue
@@ -316,10 +204,10 @@ class WaveSyncService:
 
             try:
                 created_tx = self._require_client().create_money_transaction(tx_input)
-                self.db.mark_staged_pushed("transaction", tx.id, str(created_tx["id"]))
+                self.db.mark_staged_pushed(tx.id, str(created_tx["id"]))
                 summary.transactions_pushed += 1
             except WaveApiError as err:
-                self.db.mark_staged_failed("transaction", tx.id, str(err))
+                self.db.mark_staged_failed(tx.id, str(err))
                 summary.transactions_failed += 1
                 summary.errors.append(f"Staged tx #{tx.id} ({tx.description}): {err}")
             except OutcomeUnknownError as err:
@@ -328,7 +216,7 @@ class WaveSyncService:
                     f"{tx.external_id} and run 'approve --tx {tx.id}' only if it is missing: "
                     f"{err}"
                 )
-                self.db.mark_staged_outcome_unknown("transaction", tx.id, msg)
+                self.db.mark_staged_outcome_unknown(tx.id, msg)
                 summary.transactions_failed += 1
                 summary.errors.append(f"Staged tx #{tx.id} ({tx.description}): {msg}")
                 raise
@@ -345,13 +233,10 @@ class WaveSyncService:
 
     def _resolve_required_accounts(
         self,
-        approved_invoices: list[StagedInvoice],
         approved_txs: list[StagedTransaction],
         allow_placeholders: bool,
     ) -> dict[str, str]:
         required_keys: set[str] = set()
-        if approved_invoices:
-            required_keys.add("revenue_default")
         for tx in approved_txs:
             required_keys.add(tx.anchor_account_key)
             for li in tx.line_items:

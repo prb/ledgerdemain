@@ -375,14 +375,16 @@ def test_non_env_placeholder_preserved_and_load_dotenv_removed(
     cfg_path.write_text(
         """[wave]
 business_id = "${TEST_ENV_BIZ}"
-default_product_name = "Literal ${foo-bar}"
+
+[harvest]
+user_agent = "Literal ${foo-bar}"
 """,
         encoding="utf-8",
     )
 
     cfg = load_config(cfg_path)
     assert cfg.wave.business_id == "biz-123"
-    assert cfg.wave.default_product_name == "Literal ${foo-bar}"
+    assert cfg.harvest.user_agent == "Literal ${foo-bar}"
 
 
 def test_example_config_and_cli_fallback_use_keychain_placeholders() -> None:

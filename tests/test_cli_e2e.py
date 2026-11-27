@@ -153,16 +153,21 @@ def test_full_offline_cli_workflow(tmp_path: Path, monkeypatch: pytest.MonkeyPat
     assert code == 0, err
     dry_json: dict[str, Any] = json.loads(out)
     assert dry_json["dry_run"] is True
-    assert dry_json["invoices_ready"] == 3
     # The two BLUE BOTTLE COFFEE rows are not categorized: OFX carries no merchant category, so
     # the category-based fallback rules were removed (#35).
     assert dry_json["transactions_ready"] == 10
     for p in dry_json["payloads"]:
         if p["operation"] == "moneyTransactionCreate":
             assert "status" not in p["input"]
-        elif p["operation"] == "invoiceCreate":
-            for item in p["input"]["items"]:
-                assert "unitPrice" in item
+    # Harvest deposits book straight to revenue_default (no invoice mirroring or clearing account).
+    harvest_deposits = [
+        p["input"]
+        for p in dry_json["payloads"]
+        if p["input"]["description"].startswith("Harvest Invoice Payment")
+    ]
+    assert harvest_deposits
+    for deposit in harvest_deposits:
+        assert deposit["lineItems"][0]["accountId"] == "<UNSYNCED_WAVE_ACCOUNT:revenue_default>"
 
     # 9. report --format json
     code, out, err = _run_cli(cfg_path, ["report", "--format", "json"])

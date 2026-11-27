@@ -213,16 +213,6 @@ class WaveCustomer:
 
 
 @dataclass(slots=True)
-class WaveProduct:
-    """Cached Wave product/service."""
-
-    wave_id: str
-    name: str
-    unit_price: Money = ZERO
-    income_account_id: str = ""
-
-
-@dataclass(slots=True)
 class StagedLineItem:
     """Single categorization leg of a staged Wave money transaction."""
 
@@ -278,25 +268,5 @@ class StagedTransaction:
     status: str = "staged"
     review_reason: str = ""
     wave_transaction_id: str | None = None
-    last_error: str | None = None
-    id: int | None = None
-
-
-@dataclass(slots=True)
-class StagedInvoice:
-    """Staged Wave invoiceCreate payload mirroring a Harvest invoice."""
-
-    external_id: str
-    harvest_invoice_id: int
-    invoice_number: str
-    customer_name: str
-    wave_customer_id: str | None
-    invoice_date: str
-    due_date: str
-    wave_status: str
-    items: list[dict[str, Any]]
-    total_amount: Money
-    status: str = "staged"
-    wave_invoice_id: str | None = None
     last_error: str | None = None
     id: int | None = None

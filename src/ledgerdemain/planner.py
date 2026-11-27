@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any
 
 from ledgerdemain.categorize import Categorizer
 from ledgerdemain.config import AppConfig
@@ -14,7 +13,6 @@ from ledgerdemain.models import (
     GustoPayrollRun,
     HarvestInvoice,
     ReconciliationMatch,
-    StagedInvoice,
     StagedLineItem,
     StagedTransaction,
 )
@@ -28,7 +26,6 @@ class BalanceError(ValueError):
 DEFAULT_NORMAL_BALANCE: dict[str, str] = {
     # Cash/Bank Assets
     "grasshopper_checking": "DEBIT",
-    "grasshopper_savings": "DEBIT",
     "grasshopper_money_market": "DEBIT",
     # Liabilities
     "capital_one_card": "CREDIT",
@@ -37,10 +34,7 @@ DEFAULT_NORMAL_BALANCE: dict[str, str] = {
     # Income
     "revenue_default": "CREDIT",
     "interest_income": "CREDIT",
-    # Asset / Clearing & Expense accounts (DEBIT-normal)
-    "invoice_payments_clearing": "DEBIT",
-    "cc_transfer_clearing": "DEBIT",
-    "bank_transfer_clearing": "DEBIT",
+    # Expense accounts (DEBIT-normal)
     "merchant_fees": "DEBIT",
     "payroll_gross_wages": "DEBIT",
     "payroll_reimbursements": "DEBIT",
@@ -111,13 +105,11 @@ def validate_double_entry_balance(
 
 @dataclass(slots=True)
 class PlanSummary:
-    """Counts produced by building staged transactions and invoices."""
+    """Counts produced by building staged transactions."""
 
     staged_transactions: int = 0
     needs_review: int = 0
     manual_transfers: int = 0
-    manual_invoice_payments: int = 0
-    staged_invoices: int = 0
 
 
 class Planner:
@@ -151,18 +143,8 @@ class Planner:
         return "INCREASE" if normal == "CREDIT" else "DECREASE"
 
     def build_plan(self) -> PlanSummary:
-        """Stage Harvest invoices and all bank/card transactions idempotently."""
+        """Stage all bank/card transactions idempotently."""
         summary = PlanSummary()
-
-        if self.config.accounting.mirror_harvest_invoices:
-            for inv in self.db.list_harvest_invoices():
-                if inv.id is None or inv.state == "draft":
-                    continue
-                staged_inv = self._build_staged_invoice(inv)
-                self.db.upsert_staged_invoice(staged_inv)
-                summary.staged_invoices += 1
-        else:
-            self.db.delete_unpushed_staged_invoices()
 
         confirmed = self.db.list_matches(status="confirmed")
         tx_matches: dict[int, list[ReconciliationMatch]] = {}
@@ -182,48 +164,8 @@ class Planner:
                 summary.needs_review += 1
             elif staged.status == "manual_transfer_required":
                 summary.manual_transfers += 1
-            elif staged.status == "manual_invoice_payment_required":
-                summary.manual_invoice_payments += 1
 
         return summary
-
-    def _build_staged_invoice(self, inv: HarvestInvoice) -> StagedInvoice:
-        assert inv.id is not None
-        cust = self.db.find_wave_customer_by_name(inv.client_name)
-        items: list[dict[str, Any]] = []
-        if inv.line_items:
-            for li in inv.line_items:
-                items.append(
-                    {
-                        "description": li.description
-                        or li.kind
-                        or f"Invoice #{inv.invoice_number}",
-                        "quantity": li.quantity,
-                        "unitPrice": format_money(li.unit_price),
-                    }
-                )
-        else:
-            items.append(
-                {
-                    "description": inv.subject or f"Harvest Invoice #{inv.invoice_number}",
-                    "quantity": "1",
-                    "unitPrice": format_money(inv.subtotal),
-                }
-            )
-
-        return StagedInvoice(
-            external_id=f"ld:inv:harvest:{inv.harvest_id}",
-            harvest_invoice_id=inv.id,
-            invoice_number=inv.invoice_number,
-            customer_name=inv.client_name,
-            wave_customer_id=cust.wave_id if cust else None,
-            invoice_date=inv.issue_date,
-            due_date=inv.due_date,
-            wave_status=self.config.accounting.wave_invoice_create_status,
-            items=items,
-            total_amount=inv.total_amount,
-            status="staged",
-        )
 
     def _build_staged_transaction(
         self, tx: BankTransaction, matches: list[ReconciliationMatch]
@@ -323,50 +265,23 @@ class Planner:
             to_acct = tx.account_key
 
         kind_label = "bank" if is_bank else "CC"
-        strategy = self.config.accounting.transfer_strategy
-        if strategy == "manual_transfer":
-            return StagedTransaction(
-                external_id=ext_id,
-                bank_tx_id=tx.id,
-                tx_date=tx.posted_date,
-                description=tx.description,
-                notes=f"Paired {kind_label} transfer with bank_tx #{other_id}",
-                anchor_account_key=tx.account_key,
-                anchor_wave_account_id=anchor_wave_id,
-                anchor_amount=tx.amount,
-                anchor_direction=tx.direction,
-                line_items=[],
-                category_rule="bank_transfer_manual" if is_bank else "cc_transfer_manual",
-                status="manual_transfer_required",
-                review_reason=(
-                    f"Record as Transfer in Wave UI ({from_acct} -> {to_acct}, "
-                    f"${format_money(tx.amount)}, paired with bank_tx #{other_id})"
-                ),
-            )
-
-        desired_effect = "DEBIT" if tx.direction == "WITHDRAWAL" else "CREDIT"
-        clearing_key = "bank_transfer_clearing" if is_bank else "cc_transfer_clearing"
-        desc_prefix = "Bank Transfer" if is_bank else "Credit Card Payment Transfer"
-        line_items = [
-            StagedLineItem(
-                account_key=clearing_key,
-                wave_account_id=self._wave_account_id(clearing_key),
-                amount=tx.amount,
-                balance=self._balance_for_effect(clearing_key, desired_effect),
-                description=f"{desc_prefix} ({from_acct} -> {to_acct}, paired bank_tx #{other_id})",
-            )
-        ]
-        return self._finalize_staged(
-            tx=tx,
-            ext_id=ext_id,
-            anchor_wave_id=anchor_wave_id,
+        return StagedTransaction(
+            external_id=ext_id,
+            bank_tx_id=tx.id,
+            tx_date=tx.posted_date,
             description=tx.description,
-            notes=(
-                f"{kind_label} transfer via clearing account "
-                f"({from_acct} -> {to_acct}, paired bank_tx #{other_id})"
+            notes=f"Paired {kind_label} transfer with bank_tx #{other_id}",
+            anchor_account_key=tx.account_key,
+            anchor_wave_account_id=anchor_wave_id,
+            anchor_amount=tx.amount,
+            anchor_direction=tx.direction,
+            line_items=[],
+            category_rule="bank_transfer_manual" if is_bank else "cc_transfer_manual",
+            status="manual_transfer_required",
+            review_reason=(
+                f"Record as Transfer in Wave UI ({from_acct} -> {to_acct}, "
+                f"${format_money(tx.amount)}, paired with bank_tx #{other_id})"
             ),
-            line_items=line_items,
-            rule_name="bank_transfer_clearing" if is_bank else "cc_transfer_clearing",
         )
 
     def _plan_gusto(
@@ -551,33 +466,7 @@ class Planner:
         inv_labels = ", ".join(
             f"#{inv.invoice_number} ({inv.client_name})" for inv in matched_invoices
         )
-        if (
-            self.config.accounting.mirror_harvest_invoices
-            and self.config.accounting.mirrored_invoice_deposit_strategy == "manual_ui_payment"
-        ):
-            return StagedTransaction(
-                external_id=ext_id,
-                bank_tx_id=tx.id,
-                tx_date=tx.posted_date,
-                description=tx.description,
-                notes=f"Matched Harvest invoice(s): {inv_labels}",
-                anchor_account_key=tx.account_key,
-                anchor_wave_account_id=anchor_wave_id,
-                anchor_amount=tx.amount,
-                anchor_direction=tx.direction,
-                line_items=[],
-                category_rule="harvest_manual_ui_payment",
-                status="manual_invoice_payment_required",
-                review_reason=(
-                    f"Record payment in Wave UI against mirrored invoice(s): {inv_labels}"
-                ),
-            )
-
-        target_key = (
-            "invoice_payments_clearing"
-            if self.config.accounting.mirror_harvest_invoices
-            else "revenue_default"
-        )
+        target_key = "revenue_default"
         credit_balance = self._balance_for_effect(target_key, "CREDIT")
         line_items: list[StagedLineItem] = []
 

@@ -433,35 +433,6 @@ def test_ofx_xml_roundtrip_preserves_dates_direction_fitid_and_card(
 
 
 @given(
-    amount=_MONEY_POS,
-    clearing_normal=st.sampled_from(["DEBIT", "CREDIT"]),
-)
-def test_bank_transfer_clearing_nets_to_zero(amount: Money, clearing_normal: str) -> None:
-    normals = {
-        "grasshopper_savings": "DEBIT",
-        "grasshopper_money_market": "DEBIT",
-        "bank_transfer_clearing": clearing_normal,
-    }
-    out_balance = "INCREASE" if clearing_normal == "DEBIT" else "DECREASE"
-    in_balance = "DECREASE" if clearing_normal == "DEBIT" else "INCREASE"
-
-    out_line = StagedLineItem("bank_transfer_clearing", None, amount, out_balance)
-    in_line = StagedLineItem("bank_transfer_clearing", None, amount, in_balance)
-
-    validate_double_entry_balance(
-        "grasshopper_savings", "WITHDRAWAL", amount, [out_line], normals.__getitem__
-    )
-    validate_double_entry_balance(
-        "grasshopper_money_market", "DEPOSIT", amount, [in_line], normals.__getitem__
-    )
-
-    signed_sum = (amount if out_balance == "INCREASE" else -amount) + (
-        amount if in_balance == "INCREASE" else -amount
-    )
-    assert signed_sum == ZERO
-
-
-@given(
     gusto_cobra=_MONEY_NONNEG,
     gusto_hsa=_MONEY_NONNEG,
     bank_cobra=_MONEY_POS,
@@ -564,7 +535,7 @@ def test_scorp_benefits_tieout_variance_identity(
                     )
                 )
 
-            tie = build_report(db, cfg)["scorp_benefits_tieout"]
+            tie = build_report(db)["scorp_benefits_tieout"]
             health_var = parse_money(tie["health_insurance_variance"])
             hsa_var = parse_money(tie["hsa_variance"])
             total_var = parse_money(tie["total_variance"])

@@ -1759,6 +1759,18 @@ def _grasshopper_adapter(body: object) -> GrasshopperApiAdapter:
             "invoice_payments entry #0",
         ),
         (lambda a: a.fetch_invoices(), 42, "must be a JSON object"),
+        # Error bodies, renamed keys and empty bodies are not zero activity.
+        (
+            lambda a: a.fetch_clients(),
+            {"error": "invalid_token", "error_description": "expired"},
+            r"no 'clients' key \(got keys: error, error_description\)",
+        ),
+        (
+            lambda a: a.fetch_invoices(),
+            {"invoice_list": [], "next_page": None},
+            "no 'invoices' key",
+        ),
+        (lambda a: a.fetch_payments_for_invoice("101"), {}, r"got keys: none"),
     ],
 )
 def test_harvest_api_rejects_malformed_payloads(
@@ -1789,6 +1801,16 @@ def test_harvest_api_rejects_malformed_payloads(
             "Malformed Grasshopper transaction",
         ),
         (lambda a: a.list_accounts(), "oops", "must be a list or object"),
+        (
+            lambda a: a.fetch_transactions(),
+            {"message": "Forbidden: IP not allowlisted"},
+            r"none of transactions, data, items \(got keys: message\)",
+        ),
+        (lambda a: a.fetch_transactions(), {"txns": []}, "none of transactions"),
+        (lambda a: a.list_accounts(), {}, r"none of accounts, data, items \(got keys: none\)"),
+        (lambda a: a.fetch_transactions(), {"transactions": None}, "must be a list"),
+        (lambda a: a.fetch_transactions(), {"transactions": ["x"]}, "item #0 must be an object"),
+        (lambda a: a.list_accounts(), [{"id": "a1"}, 3], "item #1 must be an object"),
     ],
 )
 def test_grasshopper_api_rejects_malformed_payloads(
@@ -1859,3 +1881,60 @@ def test_cli_capital_one_rejects_csv_and_pdf_files(tmp_path: Path) -> None:
     assert code == 0
     assert "Capital One: 0 file(s)" in out
     assert err == ""
+
+
+def _empty_body_client() -> HttpClient:
+    """HttpClient whose every response is a 200 with no body."""
+
+    def handler(
+        method: str, url: str, headers: dict[str, str], payload: bytes | None
+    ) -> HttpResponse:
+        del method, url, headers, payload
+        return HttpResponse(200, {}, b"")
+
+    return HttpClient(transport=RoutingMockTransport(handler), sleep_fn=lambda _: None)
+
+
+def test_api_adapters_reject_empty_response_body() -> None:
+    harvest = HarvestApiAdapter(
+        HarvestConfig(account_id="harv-1", access_token="tok", user_agent="Ledgerdemain test"),
+        http_client=_empty_body_client(),
+    )
+    with pytest.raises(HarvestParseError, match="no 'invoices' key"):
+        harvest.fetch_invoices()
+
+    grasshopper = GrasshopperApiAdapter(
+        GrasshopperConfig(account_id="acct-99", access_token="gh-tok", header_secret="sec-123"),
+        http_client=_empty_body_client(),
+    )
+    with pytest.raises(GrasshopperParseError, match="none of transactions"):
+        grasshopper.fetch_transactions()
+
+
+@pytest.mark.parametrize(
+    ("fetch", "body"),
+    [
+        (lambda a: a.fetch_clients(), {"clients": [], "next_page": None}),
+        (lambda a: a.fetch_invoices(), {"invoices": [], "next_page": None}),
+        (lambda a: a.fetch_payments_for_invoice("101"), {"invoice_payments": []}),
+    ],
+)
+def test_harvest_api_accepts_zero_activity(
+    fetch: Callable[[HarvestApiAdapter], list[object]], body: object
+) -> None:
+    assert fetch(_harvest_adapter(body)) == []
+
+
+@pytest.mark.parametrize(
+    ("fetch", "body"),
+    [
+        (lambda a: a.fetch_transactions(), {"transactions": []}),
+        (lambda a: a.fetch_transactions(), {"data": [], "next_cursor": None}),
+        (lambda a: a.fetch_transactions(), []),
+        (lambda a: a.list_accounts(), {"accounts": []}),
+    ],
+)
+def test_grasshopper_api_accepts_zero_activity(
+    fetch: Callable[[GrasshopperApiAdapter], list[object]], body: object
+) -> None:
+    assert fetch(_grasshopper_adapter(body)) == []

@@ -15,7 +15,7 @@ from hypothesis import strategies as st
 from ledgerdemain.adapters.capital_one import CapitalOnePdfAdapter
 from ledgerdemain.adapters.ofx import OfxTransactionParser
 from ledgerdemain.categorize import Categorizer
-from ledgerdemain.config import CategorizationRule, load_config
+from ledgerdemain.config import CategorizationRule, RetirementConfig, load_config
 from ledgerdemain.db import LedgerDB, make_bank_fingerprint
 from ledgerdemain.models import (
     BankTransaction,
@@ -26,6 +26,7 @@ from ledgerdemain.models import (
 from ledgerdemain.money import ZERO, Money, format_money, parse_money
 from ledgerdemain.planner import BalanceError, validate_double_entry_balance
 from ledgerdemain.report import build_report
+from ledgerdemain.retirement import compute_solo401k_limits
 from tests.fixtures import write_test_workspace_config
 
 _MONEY_POS = st.integers(min_value=1, max_value=5_000_000).map(Money)
@@ -594,3 +595,68 @@ def test_scorp_benefits_tieout_variance_identity(
             assert tie["in_balance"] is (bank_cobra == gusto_cobra and bank_hsa_net == gusto_hsa)
         finally:
             db.close()
+
+
+@given(
+    basis=st.sampled_from(["w2_box5", "w2_box1"]),
+    cash_wages=st.integers(min_value=0, max_value=60_000_000).map(Money),
+    imputed_benefits=st.integers(min_value=0, max_value=10_000_000).map(Money),
+    employee_deferrals=st.integers(min_value=0, max_value=8_000_000).map(Money),
+    consumed=st.integers(min_value=0, max_value=10_000_000).map(Money),
+    rate=st.tuples(
+        st.integers(min_value=1, max_value=12),
+        st.integers(min_value=1, max_value=12),
+    ).filter(lambda r: r[0] <= r[1]),
+)
+def test_solo401k_floor_cap_and_consumed_remaining_invariants(
+    basis: str,
+    cash_wages: Money,
+    imputed_benefits: Money,
+    employee_deferrals: Money,
+    consumed: Money,
+    rate: tuple[int, int],
+) -> None:
+    num, den = rate
+    ret = RetirementConfig(
+        compensation_basis=basis,
+        employer_rate_numerator=num,
+        employer_rate_denominator=den,
+    )
+    res = compute_solo401k_limits(
+        cash_w2_wages=cash_wages,
+        imputed_scorp_benefits=imputed_benefits,
+        employee_deferrals=employee_deferrals,
+        consumed=consumed,
+        retirement=ret,
+    )
+
+    eligible_capped = res["eligible_compensation"]
+    rate_cap = res["employer_rate_cap"]
+    headroom = res["section_415c_headroom"]
+    max_ps = res["max_employer_profit_sharing"]
+    remaining = res["remaining"]
+    excess = res["excess"]
+
+    assert isinstance(eligible_capped, Money)
+    assert isinstance(rate_cap, Money)
+    assert isinstance(headroom, Money)
+    assert isinstance(max_ps, Money)
+    assert isinstance(remaining, Money)
+    assert isinstance(excess, Money)
+
+    # Exact floor property: never exceeds exact rational cap, and +1 cent would exceed it
+    assert rate_cap.cents * den <= eligible_capped.cents * num
+    assert (rate_cap.cents + 1) * den > eligible_capped.cents * num
+
+    # Bounded by both rate cap and §415(c) headroom
+    assert max_ps.cents * den <= eligible_capped.cents * num
+    assert max_ps <= headroom
+    assert headroom == max(ZERO, ret.annual_additions_limit - employee_deferrals)
+
+    # Tight floor holds whenever not limited by §415(c)
+    if res["limiting_factor"] != "section_415c_limit":
+        assert (max_ps.cents + 1) * den > eligible_capped.cents * num
+
+    # Exact consumed/remaining/excess conservation
+    assert consumed + remaining - excess == max_ps
+    assert remaining == ZERO or excess == ZERO

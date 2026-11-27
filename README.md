@@ -122,3 +122,4 @@ uv run --extra dev pytest -v
 | `ledgerdemain recategorize --tx ID --account KEY [--note TEXT]` | Reassign account category and re-stage |
 | `ledgerdemain push [--dry-run] [--invoices-only \| --transactions-only]` | Preview JSON payloads or push live to Wave |
 | `ledgerdemain report [--period YYYY-MM] [--format text\|json]` | Summary, AR status, Gusto clearing check, Wave checklist |
+| `ledgerdemain solo401k [--year YYYY] [--employee-deferrals AMT] [--format text\|json]` | YTD Solo 401(k) employer profit-sharing limit and room |

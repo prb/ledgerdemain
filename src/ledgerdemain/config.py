@@ -9,13 +9,17 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from ledgerdemain.money import Money, parse_money
+from ledgerdemain.money import ZERO, Money, parse_money
 
 _ENV_PATTERN = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}")
 
 VALID_DEPOSIT_STRATEGIES = {"ar_clearing", "manual_ui_payment", "direct_income"}
 VALID_INVOICE_STATUSES = {"SAVED", "DRAFT"}
 VALID_TRANSFER_STRATEGIES = {"manual_transfer", "clearing_account"}
+VALID_RETIREMENT_COMPENSATION_BASES = {"w2_box5", "w2_box1"}
+
+DEFAULT_ANNUAL_ADDITIONS_LIMIT = Money(7_200_000)  # $72,000.00 (2026 IRS Notice 2025-67 §415(c))
+DEFAULT_COMPENSATION_CAP = Money(36_000_000)  # $360,000.00 (2026 IRS Notice 2025-67 §401(a)(17))
 
 
 class ConfigError(ValueError):
@@ -203,6 +207,18 @@ class PatternsConfig:
 
 
 @dataclass(slots=True)
+class RetirementConfig:
+    """Solo 401(k) employer profit-sharing calculation settings."""
+
+    compensation_basis: str = "w2_box5"
+    annual_additions_limit: Money = DEFAULT_ANNUAL_ADDITIONS_LIMIT
+    compensation_cap: Money = DEFAULT_COMPENSATION_CAP
+    profit_sharing_account_key: str = "solo_401k_profit_sharing"
+    employer_rate_numerator: int = 1
+    employer_rate_denominator: int = 4
+
+
+@dataclass(slots=True)
 class AppConfig:
     """Root application configuration."""
 
@@ -214,6 +230,7 @@ class AppConfig:
     grasshopper: GrasshopperConfig
     accounts: dict[str, str]
     patterns: PatternsConfig
+    retirement: RetirementConfig = field(default_factory=RetirementConfig)
     gusto_column_overrides: dict[str, str] = field(default_factory=dict)
 
 
@@ -241,6 +258,67 @@ def _resolve_path(base_dir: Path, raw_path: str) -> Path:
 def _compile_patterns(raw_list: list[str], fallback: list[str]) -> list[re.Pattern[str]]:
     items = raw_list if raw_list else fallback
     return [re.compile(pat) for pat in items]
+
+
+def _parse_positive_limit(raw_value: Any, default: Money, field_name: str) -> Money:
+    if raw_value is None:
+        return default
+    try:
+        parsed = parse_money(raw_value)
+    except (TypeError, ValueError) as exc:
+        raise ConfigError(f"Invalid retirement.{field_name}: {raw_value!r}") from exc
+    if parsed <= ZERO:
+        raise ConfigError(f"retirement.{field_name} must be positive, got {parsed}")
+    return parsed
+
+
+def _parse_retirement_config(raw_section: object) -> RetirementConfig:
+    if raw_section is None:
+        raw_section = {}
+    if not isinstance(raw_section, dict):
+        raise ConfigError("Invalid [retirement] section: must be a TOML table")
+
+    basis = str(raw_section.get("compensation_basis", "w2_box5")).strip().lower()
+    if basis not in VALID_RETIREMENT_COMPENSATION_BASES:
+        raise ConfigError(
+            f"Invalid retirement.compensation_basis {basis!r}; "
+            f"must be one of {sorted(VALID_RETIREMENT_COMPENSATION_BASES)}"
+        )
+
+    annual_limit = _parse_positive_limit(
+        raw_section.get("annual_additions_limit"),
+        DEFAULT_ANNUAL_ADDITIONS_LIMIT,
+        "annual_additions_limit",
+    )
+    comp_cap = _parse_positive_limit(
+        raw_section.get("compensation_cap"),
+        DEFAULT_COMPENSATION_CAP,
+        "compensation_cap",
+    )
+
+    account_key = str(
+        raw_section.get("profit_sharing_account_key", "solo_401k_profit_sharing")
+    ).strip()
+    if not account_key:
+        account_key = "solo_401k_profit_sharing"
+
+    num = raw_section.get("employer_rate_numerator", 1)
+    den = raw_section.get("employer_rate_denominator", 4)
+    if isinstance(num, bool) or not isinstance(num, int) or num <= 0:
+        raise ConfigError(f"retirement.employer_rate_numerator must be positive int, got {num!r}")
+    if isinstance(den, bool) or not isinstance(den, int) or den <= 0:
+        raise ConfigError(f"retirement.employer_rate_denominator must be positive int, got {den!r}")
+    if num > den:
+        raise ConfigError(f"retirement employer rate ({num}/{den}) cannot exceed 100%")
+
+    return RetirementConfig(
+        compensation_basis=basis,
+        annual_additions_limit=annual_limit,
+        compensation_cap=comp_cap,
+        profit_sharing_account_key=account_key,
+        employer_rate_numerator=num,
+        employer_rate_denominator=den,
+    )
 
 
 def load_config(path: Path) -> AppConfig:
@@ -366,6 +444,7 @@ def load_config(path: Path) -> AppConfig:
     gusto_section = raw.get("gusto", {})
     overrides_raw = gusto_section.get("column_overrides", {})
     gusto_overrides = {str(k): str(v) for k, v in overrides_raw.items()}
+    retirement = _parse_retirement_config(raw.get("retirement"))
 
     return AppConfig(
         config_dir=config_dir,
@@ -376,6 +455,7 @@ def load_config(path: Path) -> AppConfig:
         grasshopper=grasshopper,
         accounts=accounts,
         patterns=patterns,
+        retirement=retirement,
         gusto_column_overrides=gusto_overrides,
     )
 

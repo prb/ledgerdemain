@@ -490,6 +490,7 @@ def _ingest_inbox_files(
     failures: list[tuple[Path, str]],
     *,
     per_file_prefix: str | None = None,
+    per_file_suffix: str = "",
 ) -> tuple[int, int, int]:
     """Ingest inbox files individually, recording ValueError failures without aborting."""
     succeeded = total_r = total_i = 0
@@ -504,7 +505,7 @@ def _ingest_inbox_files(
         total_r += r
         total_i += ins
         if per_file_prefix is not None:
-            print(f"{per_file_prefix} ({f.name}): read {r}, inserted {ins}.")
+            print(f"{per_file_prefix} ({f.name}): read {r}, inserted {ins}{per_file_suffix}.")
     return succeeded, total_r, total_i
 
 
@@ -582,19 +583,20 @@ def _cmd_ingest(args: argparse.Namespace) -> int:
             )
 
         elif target == "gusto":
-            files = (
-                [Path(args.file)]
-                if args.file
-                else _inbox_files(cfg.general.inbox_dir, "gusto", (".csv",))
-            )
-            total_r = total_i = 0
-            for f in files:
-                r, ins = _ingest_gusto_file(db, cfg, f, args.run_type)
-                total_r += r
-                total_i += ins
-            print(
-                f"Gusto: {len(files)} file(s), read {total_r}, inserted {total_i} payroll run(s)."
-            )
+            if args.file:
+                r, ins = _ingest_gusto_file(db, cfg, Path(args.file), args.run_type)
+                print(f"Gusto: 1 file(s), read {r}, inserted {ins} payroll run(s).")
+            else:
+                succeeded, total_r, total_i = _ingest_inbox_files(
+                    "Gusto",
+                    _inbox_files(cfg.general.inbox_dir, "gusto", (".csv",)),
+                    lambda f: _ingest_gusto_file(db, cfg, f, args.run_type),
+                    failures,
+                )
+                print(
+                    f"Gusto: {succeeded} file(s), read {total_r}, "
+                    f"inserted {total_i} payroll run(s)."
+                )
 
         elif target == "all":
             if cfg.harvest.access_token and cfg.harvest.account_id:
@@ -633,10 +635,14 @@ def _cmd_ingest(args: argparse.Namespace) -> int:
                 per_file_prefix="Capital One",
             )
 
-            for f in _inbox_files(cfg.general.inbox_dir, "gusto", (".csv",)):
-                r, ins = _ingest_gusto_file(db, cfg, f, "regular")
-                print(f"Gusto ({f.name}): read {r}, inserted {ins} run(s).")
-
+            _ingest_inbox_files(
+                "Gusto",
+                _inbox_files(cfg.general.inbox_dir, "gusto", (".csv",)),
+                lambda f: _ingest_gusto_file(db, cfg, f, "regular"),
+                failures,
+                per_file_prefix="Gusto",
+                per_file_suffix=" run(s)",
+            )
     if failures:
         names = ", ".join(path.name for path, _ in failures)
         print(

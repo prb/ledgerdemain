@@ -313,7 +313,6 @@ class OfxTransactionParser:
                     normalized_description=norm_desc,
                     amount=amount,
                     direction=direction,
-                    source_category=entry.get("TRNTYPE", "").strip(),
                     card_last4=_last4(raw_card),
                     raw=dict(entry),
                 )

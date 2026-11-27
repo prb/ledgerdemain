@@ -25,7 +25,6 @@ class BankTransaction:
     normalized_description: str
     amount: Money
     direction: str  # "DEPOSIT" or "WITHDRAWAL"
-    source_category: str = ""
     card_last4: str = ""
     status: str = "posted"
     raw: dict[str, Any] = field(default_factory=dict)

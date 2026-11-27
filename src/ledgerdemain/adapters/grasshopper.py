@@ -325,7 +325,6 @@ class GrasshopperApiAdapter:
             normalized_description=norm_desc,
             amount=amount,
             direction=direction,
-            source_category=str(item.get("category") or ""),
             status=str(item.get("status") or "posted").lower(),
             raw=dict(item),
         )

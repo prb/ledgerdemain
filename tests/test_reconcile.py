@@ -23,7 +23,6 @@ def _bank_tx(
     amount: str,
     direction: str,
     fp: str,
-    category: str = "",
 ) -> BankTransaction:
     return BankTransaction(
         source=source,
@@ -36,7 +35,6 @@ def _bank_tx(
         normalized_description=desc.upper(),
         amount=Money.parse(amount),
         direction=direction,
-        source_category=category,
     )
 
 
@@ -272,7 +270,6 @@ def test_cc_transfer_matching_and_unpaired_held(tmp_path: Path) -> None:
                     "500.00",
                     "DEPOSIT",
                     "co-cc1",
-                    "CREDIT",
                 ),
                 _bank_tx(
                     "grasshopper",
@@ -289,7 +286,7 @@ def test_cc_transfer_matching_and_unpaired_held(tmp_path: Path) -> None:
         assert summary.auto_confirmed == 1
 
 
-def test_cc_transfer_ignores_source_category_without_payment_description(tmp_path: Path) -> None:
+def test_cc_transfer_requires_a_payment_description(tmp_path: Path) -> None:
     cfg = make_test_config(tmp_path)
     with LedgerDB(cfg.general.db_path) as db:
         db.init_schema()
@@ -310,7 +307,6 @@ def test_cc_transfer_ignores_source_category_without_payment_description(tmp_pat
                     "500.00",
                     "DEPOSIT",
                     "co-refund",
-                    "Payment/Credit",
                 ),
             ]
         )
@@ -339,7 +335,6 @@ def test_cc_transfer_matches_online_and_mobile_payment_descriptions(tmp_path: Pa
                     "500.00",
                     "DEPOSIT",
                     "co-1",
-                    "CREDIT",
                 ),
                 _bank_tx(
                     "grasshopper",
@@ -356,7 +351,6 @@ def test_cc_transfer_matches_online_and_mobile_payment_descriptions(tmp_path: Pa
                     "300.00",
                     "DEPOSIT",
                     "co-2",
-                    "CREDIT",
                 ),
             ]
         )

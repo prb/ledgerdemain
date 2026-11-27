@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import contextlib
+import http.client
 import json
 import time
 import urllib.error
@@ -130,7 +131,9 @@ class HttpClient:
                     body=body,
                     timeout=self.timeout,
                 )
-            except (urllib.error.URLError, TimeoutError, OSError) as exc:
+            except (urllib.error.URLError, TimeoutError, OSError, http.client.HTTPException) as exc:
+                # HTTPException covers a truncated body (IncompleteRead) or a malformed status
+                # line, which are not OSError subclasses.
                 last_exc = exc
                 if attempt < self.max_retries:
                     self.sleep_fn(self.base_delay * (2**attempt))

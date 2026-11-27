@@ -145,6 +145,11 @@ def test_non_idempotent_graphql_without_data_or_errors_is_outcome_unknown(body: 
         _post(body, idempotent=False)
 
 
+def test_non_idempotent_graphql_non_object_data_is_outcome_unknown() -> None:
+    with pytest.raises(OutcomeUnknownError, match="its data is a list, not an object"):
+        _post(b'{"data": []}', idempotent=False)
+
+
 def test_non_idempotent_graphql_errors_stay_definite() -> None:
     with pytest.raises(GraphQLError):
         _post(b'{"errors": [{"message": "bad"}], "data": null}', idempotent=False)

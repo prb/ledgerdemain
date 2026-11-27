@@ -272,5 +272,10 @@ class HttpClient:
             raise GraphQLError(errors)
         data = result.get("data")
         if not idempotent and not isinstance(data, dict):
-            raise _unusable_response(200, "it has neither data nor errors")
+            raise _unusable_response(
+                200,
+                "it has neither data nor errors"
+                if data is None
+                else f"its data is a {type(data).__name__}, not an object",
+            )
         return data if isinstance(data, dict) else {}

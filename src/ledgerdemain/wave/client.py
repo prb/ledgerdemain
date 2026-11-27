@@ -226,17 +226,30 @@ mutation MoneyTransactionCreate($input: MoneyTransactionCreateInput!) {
 """
 
 
-def _mutation_result(data: dict[str, Any], key: str) -> dict[str, Any]:
-    """Return the mutation's own result object, or raise if the response lacks it.
+def _mutation_result(data: dict[str, Any], key: str, entity: str) -> dict[str, Any]:
+    """Return the created entity from a mutation response, or raise.
 
-    A create answered without its result may still have been applied, so the outcome is unknown.
+    ``didSucceed: false`` is a definite rejection (``WaveApiError``). Anything else that doesn't
+    carry a success flag and the created entity with an ``id`` (a missing or null result, a
+    missing flag, a success without the entity) may still have been applied, so the outcome is
+    unknown.
     """
     res = data.get(key)
     if not isinstance(res, dict):
         raise OutcomeUnknownError(
             200, f"The {key} response could not be used (no {key} result); it may have been applied"
         )
-    return res
+    succeeded = res.get("didSucceed")
+    if succeeded is False:
+        raise WaveApiError(key, res.get("inputErrors") or [])
+    node = res.get(entity)
+    if succeeded is not True or not isinstance(node, dict) or node.get("id") in (None, ""):
+        raise OutcomeUnknownError(
+            200,
+            f"The {key} response could not be used (no success flag or no {entity} with an id); "
+            "it may have been applied",
+        )
+    return node
 
 
 class WaveGraphQLClient:
@@ -382,10 +395,7 @@ class WaveGraphQLClient:
         if email:
             payload["email"] = email
         data = self._gql(_CUSTOMER_CREATE_MUTATION, {"input": payload}, idempotent=False)
-        res = _mutation_result(data, "customerCreate")
-        if not res.get("didSucceed"):
-            raise WaveApiError("customerCreate", res.get("inputErrors") or [])
-        node = res["customer"]
+        node = _mutation_result(data, "customerCreate", "customer")
         return WaveCustomer(
             wave_id=str(node["id"]),
             name=str(node["name"]),
@@ -407,10 +417,7 @@ class WaveGraphQLClient:
             "incomeAccountId": income_account_id,
         }
         data = self._gql(_PRODUCT_CREATE_MUTATION, {"input": payload}, idempotent=False)
-        res = _mutation_result(data, "productCreate")
-        if not res.get("didSucceed"):
-            raise WaveApiError("productCreate", res.get("inputErrors") or [])
-        node = res["product"]
+        node = _mutation_result(data, "productCreate", "product")
         income_acc = node.get("incomeAccount") or {}
         return WaveProduct(
             wave_id=str(node["id"]),
@@ -440,15 +447,9 @@ class WaveGraphQLClient:
             "items": items,
         }
         data = self._gql(_INVOICE_CREATE_MUTATION, {"input": payload}, idempotent=False)
-        res = _mutation_result(data, "invoiceCreate")
-        if not res.get("didSucceed"):
-            raise WaveApiError("invoiceCreate", res.get("inputErrors") or [])
-        return dict(res["invoice"])
+        return dict(_mutation_result(data, "invoiceCreate", "invoice"))
 
     def create_money_transaction(self, payload: dict[str, Any]) -> dict[str, Any]:
         """Create a money transaction via moneyTransactionCreate mutation."""
         data = self._gql(_MONEY_TX_CREATE_MUTATION, {"input": payload}, idempotent=False)
-        res = _mutation_result(data, "moneyTransactionCreate")
-        if not res.get("didSucceed"):
-            raise WaveApiError("moneyTransactionCreate", res.get("inputErrors") or [])
-        return dict(res["transaction"])
+        return dict(_mutation_result(data, "moneyTransactionCreate", "transaction"))

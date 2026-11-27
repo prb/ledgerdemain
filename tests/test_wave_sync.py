@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import http.client
+import json
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -356,7 +358,34 @@ def test_rejected_create_stops_push_without_marking_records(tmp_path: Path) -> N
         assert len(db.list_staged_transactions(status="approved")) == 2
 
 
-_UNUSABLE_200_BODIES = [b"", b"not json", b"[]", b"{}", b'{"data": {}}']
+_MUTATION_ENTITIES = {
+    "customerCreate": "customer",
+    "productCreate": "product",
+    "invoiceCreate": "invoice",
+    "moneyTransactionCreate": "transaction",
+}
+
+
+def _every_mutation(result: Callable[[str], dict[str, Any]]) -> bytes:
+    """A body whose result for each create mutation is ``result(entity_name)``."""
+    data = {op: result(entity) for op, entity in _MUTATION_ENTITIES.items()}
+    return json.dumps({"data": data}).encode("utf-8")
+
+
+_UNUSABLE_200_BODIES = [
+    b"",
+    b"not json",
+    b"[]",
+    b"{}",
+    b'{"data": {}}',
+    # The mutation's own result is present but has no success flag, or reports success
+    # without the created entity or its id: Wave may have applied it.
+    _every_mutation(lambda entity: {}),
+    _every_mutation(lambda entity: {"didSucceed": None, "inputErrors": []}),
+    _every_mutation(lambda entity: {"didSucceed": True, "inputErrors": []}),
+    _every_mutation(lambda entity: {"didSucceed": True, entity: None}),
+    _every_mutation(lambda entity: {"didSucceed": True, entity: {}}),
+]
 
 
 @pytest.mark.parametrize("body", _UNUSABLE_200_BODIES)

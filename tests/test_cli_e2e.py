@@ -5,17 +5,22 @@ from __future__ import annotations
 import contextlib
 import io
 import json
+import urllib.parse
 from pathlib import Path
 from typing import Any
 
+import pytest
+
 from ledgerdemain.cli import main
+from ledgerdemain.http_client import HttpClient, HttpResponse
 from tests.fixtures import (
-    SAMPLE_CAPITAL_ONE_CSV,
-    SAMPLE_CAPITAL_ONE_PDF_LINES,
-    SAMPLE_GRASSHOPPER_CSV,
+    E2E_CAPITAL_ONE_JAN_OFX,
+    E2E_CAPITAL_ONE_STATEMENT_OFX,
+    E2E_GRASSHOPPER_OFX,
+    E2E_HARVEST_CLIENTS,
+    E2E_HARVEST_INVOICES,
     SAMPLE_GUSTO_PAYROLL_CSV,
-    SAMPLE_HARVEST_CSV,
-    create_synthetic_pdf,
+    RoutingMockTransport,
     write_test_workspace_config,
 )
 
@@ -29,7 +34,28 @@ def _run_cli(cfg_path: Path, argv: list[str]) -> tuple[int, str, str]:
     return code, stdout_buf.getvalue(), stderr_buf.getvalue()
 
 
-def test_full_offline_cli_workflow(tmp_path: Path) -> None:
+def _mock_api_handler(
+    method: str, url: str, headers: dict[str, str], body: bytes | None
+) -> HttpResponse:
+    """Serve Harvest from fixtures. Grasshopper API has no transactions (its data is OFX)."""
+    del method, headers, body
+    payload: dict[str, Any]
+    if "harvestapp" in url:
+        path = urllib.parse.urlparse(url).path
+        if path.endswith("/clients"):
+            payload = E2E_HARVEST_CLIENTS
+        elif path.endswith("/invoices"):
+            payload = E2E_HARVEST_INVOICES
+        elif path.endswith("/payments"):
+            payload = {"invoice_payments": [], "next_page": None}
+        else:
+            return HttpResponse(404, {}, b"{}")
+    else:
+        payload = {"transactions": []}
+    return HttpResponse(200, {}, json.dumps(payload).encode("utf-8"))
+
+
+def test_full_offline_cli_workflow(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     cfg_path = tmp_path / "ledgerdemain.toml"
 
     # 1. init
@@ -37,26 +63,32 @@ def test_full_offline_cli_workflow(tmp_path: Path) -> None:
     assert code == 0, err
     assert "Initialized Ledgerdemain" in out
 
-    # Overwrite with deterministic offline test config/rules
-    write_test_workspace_config(tmp_path, include_api_creds=False)
+    # Overwrite with deterministic test config/rules. API creds are set so `ingest all` pulls
+    # Harvest through the mock transport below; no real network is used.
+    write_test_workspace_config(tmp_path, include_api_creds=True)
 
-    # Drop CSVs & PDFs into inbox
-    (tmp_path / "inbox/harvest/invoices.csv").write_text(SAMPLE_HARVEST_CSV, encoding="utf-8")
-    (tmp_path / "inbox/grasshopper/checking.csv").write_text(
-        SAMPLE_GRASSHOPPER_CSV, encoding="utf-8"
-    )
-    (tmp_path / "inbox/capital_one/jan.csv").write_text(SAMPLE_CAPITAL_ONE_CSV, encoding="utf-8")
-    create_synthetic_pdf(
-        SAMPLE_CAPITAL_ONE_PDF_LINES,
-        tmp_path / "inbox/capital_one/dec_jan_statement.pdf",
+    def mock_http_client(*_args: object, **_kwargs: object) -> HttpClient:
+        return HttpClient(
+            transport=RoutingMockTransport(_mock_api_handler), sleep_fn=lambda _: None
+        )
+
+    monkeypatch.setattr("ledgerdemain.adapters.harvest.HttpClient", mock_http_client)
+    monkeypatch.setattr("ledgerdemain.adapters.grasshopper.HttpClient", mock_http_client)
+
+    # Drop OFX and Gusto CSV files into the inbox (Harvest comes from the mocked API)
+    (tmp_path / "inbox/grasshopper/checking.ofx").write_text(E2E_GRASSHOPPER_OFX, encoding="utf-8")
+    (tmp_path / "inbox/capital_one/jan.ofx").write_text(E2E_CAPITAL_ONE_JAN_OFX, encoding="utf-8")
+    (tmp_path / "inbox/capital_one/dec_jan_statement.ofx").write_text(
+        E2E_CAPITAL_ONE_STATEMENT_OFX, encoding="utf-8"
     )
     (tmp_path / "inbox/gusto/payroll_jan.csv").write_text(
         SAMPLE_GUSTO_PAYROLL_CSV, encoding="utf-8"
     )
 
     # 2. ingest all
-    code, _, err = _run_cli(cfg_path, ["ingest", "all"])
+    code, out, err = _run_cli(cfg_path, ["ingest", "all"])
     assert code == 0, err
+    assert "Harvest API: 3 clients, 3 invoices, 0 payments." in out
 
     # 3. reconcile
     code, out, err = _run_cli(cfg_path, ["reconcile", "--confirm-high-confidence"])

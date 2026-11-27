@@ -95,6 +95,9 @@ Do the same for `HARVEST_ACCESS_TOKEN`, `GRASSHOPPER_ACCESS_TOKEN` and `GRASSHOP
 - Store `WAVE_ACCESS_TOKEN`. `ledgerdemain wave list-businesses` shows your business ID.
 - `ledgerdemain wave sync-meta` caches your chart of accounts and customers. Then map your logical
   account names to Wave accounts under `[accounts]` in `ledgerdemain.toml`.
+- `plan` stops and names any account key that has no cached Wave account and isn't one of the
+  built-in accounts, so nothing is staged with a guessed debit/credit label. Run `wave sync-meta`
+  first, and again after you add or rename accounts in Wave.
 
 ### Harvest (API)
 

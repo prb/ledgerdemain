@@ -153,18 +153,6 @@ def make_test_config(tmp_dir: Path, **kwargs: Any) -> AppConfig:
     return load_config(write_test_workspace_config(tmp_dir, **kwargs))
 
 
-SAMPLE_GRASSHOPPER_CSV = """Grasshopper Business Checking - Activity Export
-Account: Operating **9012
-
-Posted Date,Transaction Date,Description,Debit,Credit,Category
-2026-01-05,2026-01-05,ACH DEPOSIT ACME CORP INV-1001,,3000.00,Deposit
-2026-01-09,2026-01-09,GUSTO FEE MONTHLY SUBSCRIPTION,45.00,,Software
-2026-01-10,2026-01-10,GUSTO PAY 260110,3705.75,,Payroll
-2026-01-10,2026-01-10,GUSTO TAX 260110,1315.50,,Payroll Tax
-2026-01-12,2026-01-12,CAPITAL ONE AUTOPAY ACH,500.00,,Transfer
-2026-01-15,2026-01-15,STRIPE TRANSFER WIDGET LABS,,1940.00,Deposit
-"""
-
 SAMPLE_GUSTO_PAYROLL_CSV = (
     "\n".join(
         [

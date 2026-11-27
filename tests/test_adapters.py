@@ -17,7 +17,6 @@ import pytest
 from ledgerdemain.adapters.base import normalize_description
 from ledgerdemain.adapters.grasshopper import (
     GrasshopperApiAdapter,
-    GrasshopperCsvAdapter,
     GrasshopperParseError,
 )
 from ledgerdemain.adapters.gusto import GustoParseError, GustoPayrollCsvAdapter
@@ -34,7 +33,6 @@ from ledgerdemain.planner import Planner
 from ledgerdemain.reconcile import Reconciler
 from tests.fixtures import (
     SAMPLE_CAPITAL_ONE_OFX_XML,
-    SAMPLE_GRASSHOPPER_CSV,
     SAMPLE_GUSTO_CONTRACTOR_CSV,
     SAMPLE_GUSTO_PAYROLL_CSV,
     SAMPLE_OFX_SGML,
@@ -140,7 +138,7 @@ def test_harvest_api_pagination_and_updated_since() -> None:
     assert any("updated_since=2026-01-01T00%3A00%3A00Z" in u for _, u, _ in transport.requests)
 
 
-def test_grasshopper_api_and_csv_and_ofx(tmp_path: Path) -> None:
+def test_grasshopper_api_and_ofx(tmp_path: Path) -> None:
     def handler(method: str, url: str, headers: dict[str, str], body: bytes | None) -> HttpResponse:
         del method, body
         assert headers["X-API-Secret"] == "sec-123"
@@ -184,13 +182,6 @@ def test_grasshopper_api_and_csv_and_ofx(tmp_path: Path) -> None:
     assert txs[0].direction == "DEPOSIT"
     assert txs[1].direction == "WITHDRAWAL"
     assert txs[1].amount == Money.parse("2000.50")
-
-    csv_path = tmp_path / "gh.csv"
-    csv_path.write_text(SAMPLE_GRASSHOPPER_CSV, encoding="utf-8")
-    csv_txs = GrasshopperCsvAdapter().parse_file(csv_path)
-    assert len(csv_txs) == 6
-    assert csv_txs[0].direction == "DEPOSIT"
-    assert csv_txs[1].direction == "WITHDRAWAL"
 
     ofx_path = tmp_path / "gh.ofx"
     ofx_path.write_text(SAMPLE_OFX_SGML, encoding="utf-8")

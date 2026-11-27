@@ -7,7 +7,7 @@ from typing import Any
 
 from ledgerdemain.config import AppConfig, ConfigError
 from ledgerdemain.db import LedgerDB
-from ledgerdemain.http_client import OutcomeUnknownError
+from ledgerdemain.http_client import GraphQLError, HttpError, OutcomeUnknownError
 from ledgerdemain.models import (
     StagedInvoice,
     StagedTransaction,
@@ -110,7 +110,9 @@ class WaveSyncService:
 
         If a create request fails with an unknown outcome (it may have been applied in Wave),
         the push stops so no further records are sent. A staged invoice or transaction in that
-        state is marked failed, so it isn't pushed again until it is checked and re-approved.
+        state is marked ``outcome_unknown``, which only an explicit ``approve --tx``/``--invoice``
+        re-queues. If Wave rejects a request outright (an HTTP or GraphQL error), the push stops
+        and nothing is marked, so the same records can be pushed again once the cause is fixed.
         """
         if invoices_only and transactions_only:
             raise ValueError("Cannot pass both invoices_only and transactions_only")
@@ -123,6 +125,11 @@ class WaveSyncService:
                 f"Push stopped after a Wave request with an unknown outcome ({err}). "
                 "Remaining approved records were not sent. Run 'ledgerdemain wave sync-meta' "
                 "before pushing again so a customer or product that was created is reused."
+            )
+        except (HttpError, GraphQLError) as err:
+            summary.errors.append(
+                f"Push stopped: Wave rejected a request ({err}). Nothing was marked for the "
+                "rejected record; fix the cause and push again."
             )
         return summary
 
@@ -235,9 +242,10 @@ class WaveSyncService:
             except OutcomeUnknownError as err:
                 msg = (
                     f"Outcome unknown, invoice may exist in Wave; check for invoice "
-                    f"#{inv.invoice_number} before re-approving: {err}"
+                    f"#{inv.invoice_number} and run 'approve --invoice {inv.id}' only if it "
+                    f"is missing: {err}"
                 )
-                self.db.mark_staged_failed("invoice", inv.id, msg)
+                self.db.mark_staged_outcome_unknown("invoice", inv.id, msg)
                 summary.invoices_failed += 1
                 summary.errors.append(f"Invoice #{inv.invoice_number}: {msg}")
                 raise
@@ -317,9 +325,10 @@ class WaveSyncService:
             except OutcomeUnknownError as err:
                 msg = (
                     f"Outcome unknown, transaction may exist in Wave; check for externalId "
-                    f"{tx.external_id} before re-approving: {err}"
+                    f"{tx.external_id} and run 'approve --tx {tx.id}' only if it is missing: "
+                    f"{err}"
                 )
-                self.db.mark_staged_failed("transaction", tx.id, msg)
+                self.db.mark_staged_outcome_unknown("transaction", tx.id, msg)
                 summary.transactions_failed += 1
                 summary.errors.append(f"Staged tx #{tx.id} ({tx.description}): {msg}")
                 raise

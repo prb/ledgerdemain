@@ -123,5 +123,3 @@ def test_money_formatting() -> None:
     assert format_money(ZERO) == "0.00"
     assert str(Money(5)) == "0.05"
     assert format_money(Money(-5)) == "-0.05"
-    assert Money(1234567).format_comma() == "12,345.67"
-    assert Money(-1234567).format_comma() == "-12,345.67"

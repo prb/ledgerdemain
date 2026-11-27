@@ -156,8 +156,8 @@ def test_full_offline_cli_workflow(tmp_path: Path, monkeypatch: pytest.MonkeyPat
     dry_json: dict[str, Any] = json.loads(out)
     assert dry_json["dry_run"] is True
     assert dry_json["invoices_ready"] == 3
-    # 10, not 11: with real OFX TRNTYPE values (DEBIT/CREDIT) the two BLUE BOTTLE COFFEE rows no
-    # longer match the "Dining Fallback" rule, because OFX carries no merchant category (#35).
+    # The two BLUE BOTTLE COFFEE rows are not categorized: OFX carries no merchant category, so
+    # the category-based fallback rules were removed (#35).
     assert dry_json["transactions_ready"] == 10
     for p in dry_json["payloads"]:
         if p["operation"] == "moneyTransactionCreate":

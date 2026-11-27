@@ -457,11 +457,8 @@ class LedgerDB:
         self,
         invoices: list[HarvestInvoice],
         *,
-        input_kind: str,
         clients: list[HarvestClient] | None = None,
         payments: list[HarvestPayment] | None = None,
-        file_path: str | None = None,
-        file_sha256: str | None = None,
         sync_cursor_source: str | None = None,
         sync_cursor_value: str | None = None,
     ) -> tuple[int, int, int]:
@@ -472,9 +469,7 @@ class LedgerDB:
             pay_cnt = self.upsert_harvest_payments(payments) if payments is not None else 0
             self.record_ingestion_batch(
                 source="harvest",
-                input_kind=input_kind,
-                file_path=file_path,
-                file_sha256=file_sha256,
+                input_kind="api",
                 records_read=inv_cnt,
                 records_inserted=inv_cnt,
             )
@@ -1148,7 +1143,7 @@ class LedgerDB:
             existing_id = int(existing["id"])
             existing_status = str(existing["status"])
             existing_rule = str(existing["category_rule"])
-            if existing_status in {"pushed", "skipped"}:
+            if existing_status in {"pushed", "skipped", "outcome_unknown"}:
                 return existing_id
             if existing_rule == "manual_recategorize" and existing_status in {"staged", "approved"}:
                 return existing_id
@@ -1227,7 +1222,7 @@ class LedgerDB:
 
         if existing:
             existing_id = int(existing["id"])
-            if str(existing["status"]) in {"pushed", "skipped"}:
+            if str(existing["status"]) in {"pushed", "skipped", "outcome_unknown"}:
                 return existing_id
             with self.transaction():
                 self.conn.execute(
@@ -1367,9 +1362,14 @@ class LedgerDB:
         return [self._row_to_staged_invoice(row) for row in rows]
 
     def delete_unpushed_staged_invoices(self) -> int:
-        """Delete unpushed staged invoices when invoice mirroring is disabled."""
+        """Delete unpushed staged invoices when invoice mirroring is disabled.
+
+        ``outcome_unknown`` invoices are kept: they may exist in Wave and need checking.
+        """
         with self.transaction():
-            cur = self.conn.execute("DELETE FROM staged_invoices WHERE status != 'pushed'")
+            cur = self.conn.execute(
+                "DELETE FROM staged_invoices WHERE status NOT IN ('pushed', 'outcome_unknown')"
+            )
             return int(cur.rowcount)
 
     def get_staged_transaction(self, staged_tx_id: int) -> StagedTransaction | None:
@@ -1417,7 +1417,7 @@ class LedgerDB:
                     UPDATE staged_transactions
                     SET status = 'approved', updated_at = ?
                     WHERE id IN ({placeholders})
-                      AND status IN ('staged', 'needs_review', 'failed')
+                      AND status IN ('staged', 'needs_review', 'failed', 'outcome_unknown')
                     """,
                     [now, *tx_ids],
                 )
@@ -1430,7 +1430,7 @@ class LedgerDB:
                     UPDATE staged_invoices
                     SET status = 'approved', updated_at = ?
                     WHERE id IN ({placeholders})
-                      AND status IN ('staged', 'failed')
+                      AND status IN ('staged', 'failed', 'outcome_unknown')
                     """,
                     [now, *invoice_ids],
                 )
@@ -1452,6 +1452,12 @@ class LedgerDB:
             raise KeyError(f"Staged transaction {staged_tx_id} not found")
         if tx.status == "pushed":
             raise ValueError(f"Staged transaction {staged_tx_id} is already pushed")
+        if tx.status == "outcome_unknown":
+            raise ValueError(
+                f"Staged transaction {staged_tx_id} may already exist in Wave (outcome unknown). "
+                f"Check Wave for externalId {tx.external_id}; re-send it with "
+                f"'approve --tx {staged_tx_id}' only if it is missing."
+            )
 
         new_line = StagedLineItem(
             account_key=account_key,
@@ -1504,25 +1510,23 @@ class LedgerDB:
 
     def mark_staged_failed(self, kind: str, staged_id: int, error: str) -> None:
         """Mark a staged invoice or transaction as failed with an error message."""
-        now = utc_now_iso()
+        self._mark_staged_error(kind, staged_id, "failed", error)
+
+    def mark_staged_outcome_unknown(self, kind: str, staged_id: int, error: str) -> None:
+        """Mark a staged record whose Wave create may or may not have been applied.
+
+        Re-planning, ``approve --all-staged`` and recategorizing leave it alone; only an
+        explicit ``approve --tx``/``--invoice`` re-queues it, after the user has checked Wave.
+        """
+        self._mark_staged_error(kind, staged_id, "outcome_unknown", error)
+
+    def _mark_staged_error(self, kind: str, staged_id: int, status: str, error: str) -> None:
+        tables = {"transaction": "staged_transactions", "invoice": "staged_invoices"}
+        if kind not in tables:
+            raise ValueError(f"Unknown staged kind: {kind!r}")
         with self.transaction():
-            if kind == "transaction":
-                self.conn.execute(
-                    """
-                    UPDATE staged_transactions
-                    SET status = 'failed', last_error = ?, updated_at = ?
-                    WHERE id = ?
-                    """,
-                    (error, now, staged_id),
-                )
-            elif kind == "invoice":
-                self.conn.execute(
-                    """
-                    UPDATE staged_invoices
-                    SET status = 'failed', last_error = ?, updated_at = ?
-                    WHERE id = ?
-                    """,
-                    (error, now, staged_id),
-                )
-            else:
-                raise ValueError(f"Unknown staged kind: {kind!r}")
+            self.conn.execute(
+                f"UPDATE {tables[kind]} SET status = ?, last_error = ?, updated_at = ?"
+                " WHERE id = ?",
+                (status, error, utc_now_iso(), staged_id),
+            )

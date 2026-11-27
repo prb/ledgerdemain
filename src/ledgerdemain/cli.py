@@ -11,10 +11,9 @@ from pathlib import Path
 from typing import Any
 
 from ledgerdemain.adapters.base import sha256_file
-from ledgerdemain.adapters.capital_one import CapitalOneCsvAdapter, CapitalOnePdfAdapter
 from ledgerdemain.adapters.grasshopper import GrasshopperApiAdapter
 from ledgerdemain.adapters.gusto import GustoPayrollCsvAdapter
-from ledgerdemain.adapters.harvest import HarvestApiAdapter, HarvestCsvAdapter
+from ledgerdemain.adapters.harvest import HarvestApiAdapter
 from ledgerdemain.adapters.ofx import OfxStatement, OfxTransactionParser
 from ledgerdemain.categorize import Categorizer
 from ledgerdemain.config import AppConfig, ConfigError, load_config, load_rules
@@ -196,7 +195,6 @@ def _cmd_init(args: argparse.Namespace) -> int:
         "inbox/grasshopper",
         "inbox/capital_one",
         "inbox/gusto",
-        "inbox/harvest",
     ):
         (target_dir / sub).mkdir(parents=True, exist_ok=True)
 
@@ -238,23 +236,11 @@ def _ingest_harvest_api(db: LedgerDB, cfg: AppConfig, since: str | None) -> tupl
 
     return db.ingest_harvest_batch(
         invoices,
-        input_kind="api",
         clients=clients,
         payments=payments,
         sync_cursor_source="harvest_invoices" if max_date else None,
         sync_cursor_value=max_date or None,
     )
-
-
-def _ingest_harvest_file(db: LedgerDB, path: Path) -> int:
-    invoices = HarvestCsvAdapter().parse_file(path)
-    _, inv_cnt, _ = db.ingest_harvest_batch(
-        invoices,
-        input_kind="csv",
-        file_path=str(path),
-        file_sha256=sha256_file(path),
-    )
-    return inv_cnt
 
 
 def _ingest_grasshopper_api(
@@ -382,10 +368,7 @@ def _ingest_capital_one_file(
     expected_currency: str | None = "USD",
 ) -> tuple[int, int]:
     suffix = path.suffix.lower()
-    if suffix == ".pdf":
-        txs = CapitalOnePdfAdapter().parse_file(path)
-        kind = "pdf"
-    elif suffix in {".ofx", ".qfx", ".qbo"}:
+    if suffix in {".ofx", ".qfx", ".qbo"}:
         stmt = OfxTransactionParser().parse_statement_file(
             path,
             source="capital_one",
@@ -396,8 +379,10 @@ def _ingest_capital_one_file(
         kind = "ofx"
         _print_ofx_summary(path, stmt)
     else:
-        txs = CapitalOneCsvAdapter().parse_file(path)
-        kind = "csv"
+        raise ValueError(
+            f"Unsupported Capital One file type {path.suffix!r} ({path.name}); "
+            "export OFX, QFX, or QBO instead."
+        )
 
     return db.ingest_bank_transactions_batch(
         txs,
@@ -528,16 +513,8 @@ def _cmd_ingest(args: argparse.Namespace) -> int:
     with db:
         target = args.ingest_target
         if target == "harvest":
-            if args.file:
-                cnt = _ingest_harvest_file(db, Path(args.file))
-                print(f"Harvest CSV: ingested {cnt} invoice(s).")
-            elif args.api or (cfg.harvest.access_token and cfg.harvest.account_id):
-                c, i, p = _ingest_harvest_api(db, cfg, args.since)
-                print(f"Harvest API: synced {c} client(s), {i} invoice(s), {p} payment(s).")
-            else:
-                files = _inbox_files(cfg.general.inbox_dir, "harvest", (".csv",))
-                total = sum(_ingest_harvest_file(db, f) for f in files)
-                print(f"Harvest inbox: processed {len(files)} file(s), {total} invoice(s).")
+            c, i, p = _ingest_harvest_api(db, cfg, args.since)
+            print(f"Harvest API: synced {c} client(s), {i} invoice(s), {p} payment(s).")
 
         elif target == "grasshopper":
             has_gh_api = bool(
@@ -579,7 +556,7 @@ def _cmd_ingest(args: argparse.Namespace) -> int:
                 files = _inbox_files(
                     cfg.general.inbox_dir,
                     "capital_one",
-                    (".csv", ".pdf", ".ofx", ".qfx", ".qbo"),
+                    (".ofx", ".qfx", ".qbo"),
                 )
                 succeeded, total_r, total_i = _ingest_inbox_files(
                     "Capital One",
@@ -617,9 +594,6 @@ def _cmd_ingest(args: argparse.Namespace) -> int:
                     print(f"Harvest API: {c} clients, {i} invoices, {p} payments.")
 
                 _run_api_step("Harvest API", _harvest_api_step, api_failures)
-            for f in _inbox_files(cfg.general.inbox_dir, "harvest", (".csv",)):
-                cnt = _ingest_harvest_file(db, f)
-                print(f"Harvest CSV ({f.name}): {cnt} invoices.")
 
             has_gh_api = bool(
                 cfg.grasshopper.access_token
@@ -645,7 +619,7 @@ def _cmd_ingest(args: argparse.Namespace) -> int:
                 _inbox_files(
                     cfg.general.inbox_dir,
                     "capital_one",
-                    (".csv", ".pdf", ".ofx", ".qfx", ".qbo"),
+                    (".ofx", ".qfx", ".qbo"),
                 ),
                 lambda f: _ingest_capital_one_file(db, f, expected_currency=cfg.general.currency),
                 failures,
@@ -938,11 +912,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     ingest_sub = p_ingest.add_subparsers(dest="ingest_target", required=True)
 
-    p_ing_harv = ingest_sub.add_parser(
-        "harvest", help="Ingest Harvest invoices/payments via API or CSV"
-    )
-    p_ing_harv.add_argument("--api", action="store_true", help="Force Harvest API sync")
-    p_ing_harv.add_argument("--file", help="Path to exported Harvest invoice CSV")
+    p_ing_harv = ingest_sub.add_parser("harvest", help="Ingest Harvest invoices/payments via API")
     p_ing_harv.add_argument("--since", help="Incremental updated_since date (YYYY-MM-DD)")
     p_ing_harv.set_defaults(func=_cmd_ingest)
 
@@ -960,10 +930,8 @@ def build_parser() -> argparse.ArgumentParser:
     p_ing_gh.add_argument("--to", dest="to_date", help="End date (YYYY-MM-DD)")
     p_ing_gh.set_defaults(func=_cmd_ingest)
 
-    p_ing_co = ingest_sub.add_parser(
-        "capital-one", help="Ingest Capital One credit card CSV/PDF/OFX"
-    )
-    p_ing_co.add_argument("--file", help="Path to Capital One CSV, PDF, or OFX/QBO file")
+    p_ing_co = ingest_sub.add_parser("capital-one", help="Ingest Capital One credit card OFX")
+    p_ing_co.add_argument("--file", help="Path to Capital One OFX/QFX/QBO file")
     p_ing_co.add_argument("--inbox", action="store_true", help="Scan inbox/capital_one/")
     p_ing_co.set_defaults(func=_cmd_ingest)
 
@@ -1011,6 +979,7 @@ def build_parser() -> argparse.ArgumentParser:
             "manual_transfer_required",
             "manual_invoice_payment_required",
             "failed",
+            "outcome_unknown",
             "pushed",
             "all",
         ],

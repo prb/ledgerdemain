@@ -229,22 +229,6 @@ class GrasshopperApiAdapter:
 
         return transactions
 
-    def fetch_all_accounts(
-        self, from_date: str | None = None, to_date: str | None = None
-    ) -> dict[str, list[BankTransaction]]:
-        """Fetch transactions for every configured Grasshopper account."""
-        results: dict[str, list[BankTransaction]] = {}
-        for acct in self.config.configured_accounts:
-            if not acct.account_id:
-                continue
-            results[acct.account_key] = self.fetch_transactions(
-                from_date=from_date,
-                to_date=to_date,
-                account_id=acct.account_id,
-                account_key=acct.account_key,
-            )
-        return results
-
     def _normalize_api_item(
         self,
         item: dict[str, Any],

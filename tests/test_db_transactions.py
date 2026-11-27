@@ -7,13 +7,12 @@ from pathlib import Path
 
 import pytest
 
-from ledgerdemain.adapters.capital_one import CapitalOneCsvAdapter
 from ledgerdemain.adapters.gusto import GustoPayrollCsvAdapter
+from ledgerdemain.adapters.ofx import OfxTransactionParser
 from ledgerdemain.cli import (
     _ingest_capital_one_file,
     _ingest_grasshopper_file,
     _ingest_gusto_file,
-    _ingest_harvest_file,
 )
 from ledgerdemain.db import LedgerDB
 from ledgerdemain.models import (
@@ -28,7 +27,6 @@ from tests.fixtures import (
     E2E_GRASSHOPPER_OFX,
     SAMPLE_CAPITAL_ONE_OFX_XML,
     SAMPLE_GUSTO_PAYROLL_CSV,
-    SAMPLE_HARVEST_CSV,
     make_test_config,
 )
 
@@ -154,10 +152,26 @@ def test_failed_gusto_file_ingest_rolls_back_batch_row(tmp_path: Path) -> None:
         assert _count(db, "ingestion_batches") == 0
 
 
-def test_failed_harvest_file_batch_insert_rolls_back_invoices(tmp_path: Path) -> None:
+def test_failed_harvest_batch_row_insert_rolls_back_invoices(tmp_path: Path) -> None:
     cfg = make_test_config(tmp_path, include_api_creds=False)
-    harvest_csv = tmp_path / "harvest.csv"
-    harvest_csv.write_text(SAMPLE_HARVEST_CSV, encoding="utf-8")
+    invoice = HarvestInvoice(
+        harvest_id="inv1",
+        invoice_number="1001",
+        client_harvest_id="c1",
+        client_name="Acme Corp",
+        issue_date="2026-01-05",
+        due_date="2026-02-04",
+        paid_date=None,
+        state="open",
+        currency="USD",
+        subtotal=Money(300000),
+        tax_amount=Money(0),
+        total_amount=Money(300000),
+        due_amount=Money(300000),
+        subject="Retainer",
+        line_items=[],
+        raw={},
+    )
 
     with LedgerDB(cfg.general.db_path) as db:
         db.init_schema()
@@ -169,7 +183,7 @@ def test_failed_harvest_file_batch_insert_rolls_back_invoices(tmp_path: Path) ->
         )
 
         with pytest.raises(sqlite3.IntegrityError, match="simulated write failure"):
-            _ingest_harvest_file(db, harvest_csv)
+            db.ingest_harvest_batch([invoice])
 
         assert _count(db, "harvest_invoices") == 0
         assert _count(db, "ingestion_batches") == 0
@@ -222,7 +236,6 @@ def test_failed_harvest_api_batch_rolls_back_all_entities_and_cursor(tmp_path: P
         with pytest.raises(sqlite3.IntegrityError, match="simulated write failure"):
             db.ingest_harvest_batch(
                 [invoice],
-                input_kind="api",
                 clients=[client],
                 payments=[payment],
                 sync_cursor_source="harvest_invoices",
@@ -239,13 +252,11 @@ def test_failed_harvest_api_batch_rolls_back_all_entities_and_cursor(tmp_path: P
 
 def test_failed_sync_cursor_update_rolls_back_bank_batch(tmp_path: Path) -> None:
     cfg = make_test_config(tmp_path, include_api_creds=False)
-    co_csv = tmp_path / "cap.csv"
-    co_csv.write_text(
-        "Transaction Date,Posted Date,Card No.,Description,Category,Debit,Credit\n"
-        "2026-01-03,2026-01-04,1234,AMAZON WEB SERVICES,Merchandise,142.50,\n",
-        encoding="utf-8",
+    co_ofx = tmp_path / "cap.ofx"
+    co_ofx.write_text(SAMPLE_CAPITAL_ONE_OFX_XML, encoding="utf-8")
+    txs = OfxTransactionParser().parse_file(
+        co_ofx, source="capital_one", account_key="capital_one_card"
     )
-    txs = CapitalOneCsvAdapter().parse_file(co_csv)
 
     with LedgerDB(cfg.general.db_path) as db:
         db.init_schema()

@@ -172,7 +172,12 @@ def test_grasshopper_list_accounts_and_multi_account_fetch() -> None:
     assert accounts[1]["id"] == "mm-1"
     assert accounts[1]["account_number_last4"] == "2222"
 
-    by_acct = adapter.fetch_all_accounts()
+    by_acct = {
+        acct.account_key: adapter.fetch_transactions(
+            account_id=acct.account_id, account_key=acct.account_key
+        )
+        for acct in gh_cfg.configured_accounts
+    }
     assert set(by_acct) == {"grasshopper_savings", "grasshopper_money_market"}
     assert by_acct["grasshopper_savings"][0].account_key == "grasshopper_savings"
     assert by_acct["grasshopper_savings"][0].direction == "WITHDRAWAL"

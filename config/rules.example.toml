@@ -75,30 +75,3 @@ priority = 50
 direction = "WITHDRAWAL"
 description_regex = "(?i)(united\\s*air|delta\\s*air|american\\s*air|southwest|jetblue|alaska\\s*air|marriott|hilton|hyatt|airbnb|uber|lyft)"
 account_key = "travel"
-
-[[rules]]
-name = "Capital One Travel Fallback"
-priority = 80
-source = "capital_one"
-direction = "WITHDRAWAL"
-source_category_regex = "(?i)^(airfare|lodging|travel)$"
-description_regex = ".*"
-account_key = "travel"
-
-[[rules]]
-name = "Capital One Dining Fallback"
-priority = 85
-source = "capital_one"
-direction = "WITHDRAWAL"
-source_category_regex = "(?i)^(dining|restaurants?)$"
-description_regex = ".*"
-account_key = "meals"
-
-[[rules]]
-name = "Capital One Office & Merchandise Fallback"
-priority = 90
-source = "capital_one"
-direction = "WITHDRAWAL"
-source_category_regex = "(?i)^(office\\s*supplies|merchandise|other\\s*services)$"
-description_regex = ".*"
-account_key = "office_supplies"

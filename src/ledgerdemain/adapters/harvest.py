@@ -1,10 +1,8 @@
-"""Harvest REST API v2 and CSV adapters."""
+"""Harvest REST API v2 adapter."""
 
 from __future__ import annotations
 
-import csv
 from collections.abc import Callable
-from pathlib import Path
 from typing import Any
 
 from ledgerdemain.adapters.base import parse_flexible_date
@@ -212,96 +210,3 @@ class HarvestApiAdapter:
             line_items=line_items,
             raw=dict(item),
         )
-
-
-class HarvestCsvAdapter:
-    """Parse exported Harvest Invoice CSV reports."""
-
-    source_name = "harvest_csv"
-
-    def parse_file(self, path: Path) -> list[HarvestInvoice]:
-        """Parse a Harvest CSV export into HarvestInvoice records."""
-        invoices: list[HarvestInvoice] = []
-        with path.open("r", encoding="utf-8-sig", newline="") as fh:
-            reader = csv.DictReader(fh)
-            for row in reader:
-                norm_row = {k.strip().lower(): (v or "").strip() for k, v in row.items() if k}
-                inv_num = (
-                    norm_row.get("invoice #")
-                    or norm_row.get("invoice number")
-                    or norm_row.get("number")
-                    or norm_row.get("invoice id")
-                    or ""
-                )
-                client_name = norm_row.get("client") or norm_row.get("client name") or ""
-                if not inv_num or not client_name:
-                    continue
-
-                issue_raw = norm_row.get("issue date") or norm_row.get("sent date") or ""
-                if not issue_raw:
-                    continue
-                issue_date = parse_flexible_date(issue_raw)
-                due_raw = norm_row.get("due date") or issue_raw
-                due_date = parse_flexible_date(due_raw)
-                paid_raw = norm_row.get("paid date") or norm_row.get("date paid") or ""
-                paid_date = parse_flexible_date(paid_raw) if paid_raw else None
-
-                state = (norm_row.get("status") or norm_row.get("state") or "open").lower()
-                total_raw = (
-                    norm_row.get("amount")
-                    or norm_row.get("total")
-                    or norm_row.get("invoice amount")
-                    or "0.00"
-                )
-                total_amount = parse_money(total_raw, ZERO)
-                tax_amount = parse_money(
-                    norm_row.get("tax") or norm_row.get("tax amount") or "0.00", ZERO
-                )
-                subtotal = (
-                    parse_money(norm_row["subtotal"], ZERO)
-                    if norm_row.get("subtotal")
-                    else (total_amount - tax_amount)
-                )
-                due_raw_amt = (
-                    norm_row.get("balance")
-                    or norm_row.get("due amount")
-                    or norm_row.get("amount due")
-                )
-                if due_raw_amt:
-                    due_amount = parse_money(due_raw_amt, ZERO)
-                else:
-                    due_amount = ZERO if state == "paid" else total_amount
-
-                harvest_id = norm_row.get("id") or f"csv:{inv_num}"
-                subject = norm_row.get("subject") or f"Harvest Invoice #{inv_num}"
-                line_items = [
-                    HarvestInvoiceLineItem(
-                        kind="Service",
-                        description=subject,
-                        quantity="1",
-                        unit_price=subtotal,
-                        amount=subtotal,
-                        taxed=tax_amount > ZERO,
-                    )
-                ]
-                invoices.append(
-                    HarvestInvoice(
-                        harvest_id=harvest_id,
-                        invoice_number=inv_num,
-                        client_harvest_id=f"csv-client:{client_name.lower()}",
-                        client_name=client_name,
-                        issue_date=issue_date,
-                        due_date=due_date,
-                        paid_date=paid_date,
-                        state=state,
-                        currency=norm_row.get("currency") or "USD",
-                        subtotal=subtotal,
-                        tax_amount=tax_amount,
-                        total_amount=total_amount,
-                        due_amount=due_amount,
-                        subject=subject,
-                        line_items=line_items,
-                        raw=dict(row),
-                    )
-                )
-        return invoices

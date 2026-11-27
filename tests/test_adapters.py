@@ -5,6 +5,8 @@ from __future__ import annotations
 import contextlib
 import io
 import json
+import os
+import sqlite3
 import urllib.parse
 from collections.abc import Callable
 from pathlib import Path
@@ -22,7 +24,7 @@ from ledgerdemain.categorize import Categorizer
 from ledgerdemain.cli import main
 from ledgerdemain.config import GrasshopperConfig, HarvestConfig
 from ledgerdemain.db import LedgerDB, make_bank_fingerprint
-from ledgerdemain.http_client import HttpClient, HttpResponse
+from ledgerdemain.http_client import HttpClient, HttpError, HttpResponse
 from ledgerdemain.models import BankTransaction, HarvestInvoiceLineItem
 from ledgerdemain.money import ZERO, Money
 from ledgerdemain.planner import Planner
@@ -1691,3 +1693,103 @@ def test_cli_gusto_ingest_file_failure_and_inbox_partial_success(tmp_path: Path)
     with LedgerDB(all_ws / "data/ledgerdemain.db") as db:
         assert len(db.list_gusto_payroll_runs()) == 1
         assert len(db.list_harvest_invoices()) == 3
+
+
+def _write_gusto_inbox(root: Path, *, corrupt: bool = False) -> None:
+    (root / "inbox/gusto").mkdir(parents=True, exist_ok=True)
+    (root / "inbox/gusto/02_valid.csv").write_text(SAMPLE_GUSTO_PAYROLL_CSV, encoding="utf-8")
+    if corrupt:
+        bad_csv = "\n".join(
+            [
+                "Check Date,Employee,Gross Earnings,Medical (Imputed),Net Pay",
+                "2026-05-01,Owner,2522.29,2522.29,0.00",
+            ]
+        )
+        (root / "inbox/gusto/01_corrupt.csv").write_text(bad_csv, encoding="utf-8")
+
+
+def test_cli_ingest_all_continues_after_api_failures(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cfg_path = write_test_workspace_config(tmp_path, include_api_creds=True)
+    _write_gusto_inbox(tmp_path)
+
+    def failing_harvest(*_args: object, **_kwargs: object) -> tuple[int, int, int]:
+        raise HttpError(503, "harvest unavailable")
+
+    def failing_grasshopper(*_args: object, **_kwargs: object) -> tuple[int, int]:
+        raise ValueError("unexpected grasshopper payload")
+
+    monkeypatch.setattr("ledgerdemain.cli._ingest_harvest_api", failing_harvest)
+    monkeypatch.setattr("ledgerdemain.cli._ingest_grasshopper_api", failing_grasshopper)
+
+    code, out, err = _run_cli_main(cfg_path, ["ingest", "all"])
+
+    assert code == 2
+    assert "Error ingesting Harvest API: HTTP 503: harvest unavailable" in err
+    assert "Error ingesting Grasshopper API: unexpected grasshopper payload" in err
+    assert "Ingest completed with 2 failed API step(s): Harvest API, Grasshopper API" in err
+    assert "failed file(s)" not in err
+    # Later sources still run after the failed API steps.
+    assert "Gusto (02_valid.csv): read 1, inserted 1 run(s)." in out
+    with LedgerDB(tmp_path / "data/ledgerdemain.db") as db:
+        assert len(db.list_gusto_payroll_runs()) == 1
+
+
+def test_cli_ingest_all_reports_api_and_file_failures_together(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cfg_path = write_test_workspace_config(tmp_path, include_api_creds=True)
+    _write_gusto_inbox(tmp_path, corrupt=True)
+
+    def failing_harvest(*_args: object, **_kwargs: object) -> tuple[int, int, int]:
+        raise HttpError(0, "Network request failed")
+
+    def ok_grasshopper(*_args: object, **_kwargs: object) -> tuple[int, int]:
+        return 0, 0
+
+    monkeypatch.setattr("ledgerdemain.cli._ingest_harvest_api", failing_harvest)
+    monkeypatch.setattr("ledgerdemain.cli._ingest_grasshopper_api", ok_grasshopper)
+
+    code, out, err = _run_cli_main(cfg_path, ["ingest", "all"])
+
+    assert code == 2
+    assert "Ingest completed with 1 failed file(s): 01_corrupt.csv" in err
+    assert "Ingest completed with 1 failed API step(s): Harvest API" in err
+    assert "Grasshopper API: read 0, inserted 0." in out
+    assert "Grasshopper API:" not in err
+    with LedgerDB(tmp_path / "data/ledgerdemain.db") as db:
+        assert len(db.list_gusto_payroll_runs()) == 1
+
+
+def test_cli_ingest_all_api_step_does_not_catch_database_errors(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cfg_path = write_test_workspace_config(tmp_path, include_api_creds=True)
+
+    def db_failure(*_args: object, **_kwargs: object) -> tuple[int, int, int]:
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr("ledgerdemain.cli._ingest_harvest_api", db_failure)
+
+    with pytest.raises(sqlite3.OperationalError):
+        _run_cli_main(cfg_path, ["ingest", "all"])
+
+
+def test_cli_gusto_inbox_continues_after_unreadable_csv(tmp_path: Path) -> None:
+    cfg_path = write_test_workspace_config(tmp_path, include_api_creds=False)
+    _write_gusto_inbox(tmp_path)
+    unreadable = tmp_path / "inbox/gusto/01_unreadable.csv"
+    unreadable.write_text(SAMPLE_GUSTO_PAYROLL_CSV, encoding="utf-8")
+    unreadable.chmod(0)
+    try:
+        if os.access(unreadable, os.R_OK):
+            pytest.skip("file permissions are not enforced for this user")
+        code, out, err = _run_cli_main(cfg_path, ["ingest", "gusto"])
+    finally:
+        unreadable.chmod(0o600)
+
+    assert code == 2
+    assert "Gusto: 1 file(s), read 1, inserted 1 payroll run(s)." in out
+    assert "Error ingesting Gusto (01_unreadable.csv):" in err
+    assert "Ingest completed with 1 failed file(s): 01_unreadable.csv" in err

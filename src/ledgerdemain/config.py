@@ -4,14 +4,21 @@ from __future__ import annotations
 
 import os
 import re
+import subprocess
 import tomllib
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 from ledgerdemain.money import Money, parse_money
 
-_ENV_PATTERN = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}")
+DEFAULT_KEYCHAIN_SERVICE = "ledgerdemain"
+_KEYCHAIN_IDENTIFIER_RE = re.compile(r"^[A-Za-z0-9._:/-]+$")
+_ENV_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+_PLACEHOLDER_PATTERN = re.compile(r"\$\{([^{}]+)\}")
+_KEYCHAIN_PREFIX = "keychain:"
+_KEYCHAIN_NOT_FOUND_RC = 44
 
 VALID_DEPOSIT_STRATEGIES = {"ar_clearing", "manual_ui_payment", "direct_income"}
 VALID_INVOICE_STATUSES = {"SAVED", "DRAFT"}
@@ -22,59 +29,175 @@ class ConfigError(ValueError):
     """Raised when configuration or rules files are invalid."""
 
 
-def load_dotenv(env_path: Path) -> dict[str, str]:
-    """Parse a .env file into a key-value dict without mutating os.environ."""
-    if not env_path.exists():
-        return {}
-    env_map: dict[str, str] = {}
-    for raw_line in env_path.read_text(encoding="utf-8", errors="replace").splitlines():
-        line = raw_line.strip()
-        if not line or line.startswith("#"):
-            continue
-        if line.startswith("export "):
-            line = line[len("export ") :].lstrip()
-        if "=" not in line:
-            continue
-        raw_key, raw_val = line.split("=", 1)
-        key = raw_key.strip()
-        val = raw_val.strip()
-        if not key:
-            continue
-        if len(val) >= 2 and ((val[0] == val[-1] == '"') or (val[0] == val[-1] == "'")):
-            val = val[1:-1]
-        elif " #" in val:
-            val = val.split(" #", 1)[0].rstrip()
-        env_map[key] = val
-    return env_map
+def _validate_keychain_identifier(value: str, label: str) -> str:
+    """Validate a macOS Keychain service or account identifier."""
+    if not value or not _KEYCHAIN_IDENTIFIER_RE.fullmatch(value):
+        raise ConfigError(
+            f"Invalid macOS Keychain {label} {value!r}; allowed characters: [A-Za-z0-9._:/-]"
+        )
+    return value
 
 
-def _resolve_env(value: str, env_vars: dict[str, str]) -> str:
-    """Replace ${ENV_VAR} tokens using resolved dotenv + process environment variables."""
+def read_keychain_secret(service: str, account: str) -> str:
+    """Read a secret from macOS Keychain via `/usr/bin/security`."""
+    _validate_keychain_identifier(service, "service")
+    _validate_keychain_identifier(account, "account")
+
+    try:
+        proc = subprocess.run(
+            [
+                "/usr/bin/security",
+                "find-generic-password",
+                "-s",
+                service,
+                "-a",
+                account,
+                "-w",
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except OSError as exc:
+        raise ConfigError(
+            f"Failed to read macOS Keychain item service={service!r}, account={account!r}: "
+            f"/usr/bin/security is unavailable ({exc})"
+        ) from exc
+
+    if proc.returncode == _KEYCHAIN_NOT_FOUND_RC:
+        raise ConfigError(
+            f"macOS Keychain item not found for service={service!r}, account={account!r}. "
+            f"Store it with: security add-generic-password -U -s {service} -a {account} -w"
+        )
+    if proc.returncode != 0:
+        detail = proc.stderr.strip()
+        suffix = f": {detail}" if detail else ""
+        raise ConfigError(
+            f"Failed to read macOS Keychain item service={service!r}, account={account!r} "
+            f"(security exited with code {proc.returncode}){suffix}"
+        )
+
+    secret = proc.stdout.rstrip("\r\n")
+    if not secret:
+        raise ConfigError(
+            f"macOS Keychain item for service={service!r}, account={account!r} is empty"
+        )
+    return secret
+
+
+def _resolve_env_only(value: str, env_vars: Mapping[str, str]) -> str:
+    """Resolve ${ENV_VAR} tokens from process environment without Keychain access."""
 
     def _replace(match: re.Match[str]) -> str:
-        return env_vars.get(match.group(1), "")
+        inner = match.group(1)
+        if inner.startswith(_KEYCHAIN_PREFIX):
+            raise ConfigError(
+                "general.keychain_service cannot reference ${keychain:...} placeholders"
+            )
+        if _ENV_NAME_RE.fullmatch(inner):
+            return env_vars.get(inner, "")
+        return match.group(0)
 
-    return _ENV_PATTERN.sub(_replace, value)
+    return _PLACEHOLDER_PATTERN.sub(_replace, value)
 
 
-def _resolve_dict_envs(data: dict[str, Any], env_vars: dict[str, str]) -> dict[str, Any]:
-    """Recursively resolve environment variable placeholders in a dictionary."""
-    resolved: dict[str, Any] = {}
-    for key, val in data.items():
-        if isinstance(val, str):
-            resolved[key] = _resolve_env(val, env_vars)
-        elif isinstance(val, dict):
-            resolved[key] = _resolve_dict_envs(val, env_vars)
-        elif isinstance(val, list):
-            resolved[key] = [
-                _resolve_dict_envs(item, env_vars)
-                if isinstance(item, dict)
-                else (_resolve_env(item, env_vars) if isinstance(item, str) else item)
-                for item in val
-            ]
-        else:
-            resolved[key] = val
-    return resolved
+def _resolve_keychain_service(raw_toml: dict[str, Any], env_vars: Mapping[str, str]) -> str:
+    """Extract and validate general.keychain_service prior to Keychain secret resolution."""
+    gen_raw = raw_toml.get("general", {})
+    if not isinstance(gen_raw, dict):
+        raise ConfigError("[general] must be a TOML table")
+    raw_service = gen_raw.get("keychain_service", DEFAULT_KEYCHAIN_SERVICE)
+    if not isinstance(raw_service, str):
+        raise ConfigError("general.keychain_service must be a string")
+    service = _resolve_env_only(raw_service, env_vars).strip()
+    return _validate_keychain_identifier(service, "service")
+
+
+def _resolve_placeholders(
+    value: str,
+    env_vars: Mapping[str, str],
+    keychain_service: str,
+    keychain_cache: dict[tuple[str, str], str],
+    *,
+    resolve_keychain: bool,
+) -> str:
+    """Resolve ${keychain:NAME} and ${ENV_VAR} placeholders in a string."""
+
+    def _replace(match: re.Match[str]) -> str:
+        inner = match.group(1)
+        if inner.startswith(_KEYCHAIN_PREFIX):
+            account = _validate_keychain_identifier(inner[len(_KEYCHAIN_PREFIX) :], "account")
+            if not resolve_keychain:
+                return match.group(0)
+            cache_key = (keychain_service, account)
+            if cache_key not in keychain_cache:
+                keychain_cache[cache_key] = read_keychain_secret(keychain_service, account)
+            return keychain_cache[cache_key]
+        if _ENV_NAME_RE.fullmatch(inner):
+            return env_vars.get(inner, "")
+        return match.group(0)
+
+    return _PLACEHOLDER_PATTERN.sub(_replace, value)
+
+
+def _resolve_value(
+    val: Any,
+    env_vars: Mapping[str, str],
+    keychain_service: str,
+    keychain_cache: dict[tuple[str, str], str],
+    *,
+    resolve_keychain: bool,
+) -> Any:
+    """Recursively resolve placeholders inside strings, dicts, and lists."""
+    if isinstance(val, str):
+        return _resolve_placeholders(
+            val,
+            env_vars,
+            keychain_service,
+            keychain_cache,
+            resolve_keychain=resolve_keychain,
+        )
+    if isinstance(val, dict):
+        return _resolve_dict_placeholders(
+            val,
+            env_vars,
+            keychain_service,
+            keychain_cache,
+            resolve_keychain=resolve_keychain,
+        )
+    if isinstance(val, list):
+        return [
+            _resolve_value(
+                item,
+                env_vars,
+                keychain_service,
+                keychain_cache,
+                resolve_keychain=resolve_keychain,
+            )
+            for item in val
+        ]
+    return val
+
+
+def _resolve_dict_placeholders(
+    data: dict[str, Any],
+    env_vars: Mapping[str, str],
+    keychain_service: str,
+    keychain_cache: dict[tuple[str, str], str],
+    *,
+    resolve_keychain: bool,
+) -> dict[str, Any]:
+    """Recursively resolve placeholders in a dictionary."""
+    return {
+        key: _resolve_value(
+            val,
+            env_vars,
+            keychain_service,
+            keychain_cache,
+            resolve_keychain=resolve_keychain,
+        )
+        for key, val in data.items()
+    }
 
 
 @dataclass(slots=True)
@@ -85,6 +208,7 @@ class GeneralConfig:
     inbox_dir: Path
     rules_path: Path
     currency: str = "USD"
+    keychain_service: str = DEFAULT_KEYCHAIN_SERVICE
 
 
 @dataclass(slots=True)
@@ -242,22 +366,36 @@ def _compile_patterns(raw_list: list[str], fallback: list[str]) -> list[re.Patte
     return [re.compile(pat) for pat in items]
 
 
-def load_config(path: Path) -> AppConfig:
-    """Load and validate an AppConfig from a TOML file (resolving .env + process env)."""
+def load_config(path: Path, *, resolve_keychain: bool = True) -> AppConfig:
+    """Load and validate an AppConfig from a TOML file.
+
+    Resolves explicit ``${keychain:NAME}`` placeholders via macOS Keychain (when
+    ``resolve_keychain=True``) and ``${ENV_VAR}`` placeholders strictly from ``os.environ``.
+    """
     config_path = path.resolve()
     if not config_path.exists():
         raise ConfigError(f"Configuration file not found: {config_path}")
 
     config_dir = config_path.parent
-    env_vars = {**load_dotenv(config_dir / ".env"), **os.environ}
     with config_path.open("rb") as fh:
-        raw = _resolve_dict_envs(tomllib.load(fh), env_vars)
+        raw_toml = tomllib.load(fh)
+    env_vars = os.environ
+    keychain_service = _resolve_keychain_service(raw_toml, env_vars)
+    keychain_cache: dict[tuple[str, str], str] = {}
+    raw = _resolve_dict_placeholders(
+        raw_toml,
+        env_vars,
+        keychain_service,
+        keychain_cache,
+        resolve_keychain=resolve_keychain,
+    )
     gen_raw = raw.get("general", {})
     general = GeneralConfig(
         db_path=_resolve_path(config_dir, str(gen_raw.get("db_path", "data/ledgerdemain.db"))),
         inbox_dir=_resolve_path(config_dir, str(gen_raw.get("inbox_dir", "inbox"))),
         rules_path=_resolve_path(config_dir, str(gen_raw.get("rules_path", "rules.toml"))),
         currency=str(gen_raw.get("currency", "USD")),
+        keychain_service=keychain_service,
     )
 
     acc_raw = raw.get("accounting", {})

@@ -1,4 +1,4 @@
-"""Tests for .env auto-loading, multi-account Grasshopper support, bank transfers, and discovery."""
+"""Tests for env placeholders, multi-account Grasshopper support, bank transfers, and discovery."""
 
 from __future__ import annotations
 
@@ -51,7 +51,7 @@ class _StubTransport:
         raise AssertionError(f"Unexpected URL: {url}")
 
 
-def test_dotenv_loading_and_env_precedence(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_env_var_resolution_ignores_dotenv(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     cfg_path = tmp_path / "ledgerdemain.toml"
     cfg_path.write_text(
         """[general]
@@ -93,16 +93,20 @@ TEST_GH_MM=mm-id-2
     monkeypatch.delenv("TEST_GH_TOK", raising=False)
     monkeypatch.delenv("TEST_GH_SAV", raising=False)
     monkeypatch.delenv("TEST_GH_MM", raising=False)
+    monkeypatch.setattr(
+        "ledgerdemain.config.subprocess.run",
+        lambda *_args, **_kwargs: pytest.fail("Keychain subprocess should not run"),
+    )
 
     cfg = load_config(cfg_path)
-    assert cfg.wave.business_id == "biz-from-dotenv"
+    assert cfg.wave.business_id == ""
     assert cfg.wave.access_token == "tok-from-environ"
-    assert cfg.grasshopper.access_token == "gh-tok-dotenv"
+    assert cfg.grasshopper.access_token == ""
     assert len(cfg.grasshopper.configured_accounts) == 2
     assert cfg.grasshopper.configured_accounts[0].account_key == "grasshopper_savings"
-    assert cfg.grasshopper.configured_accounts[0].account_id == "sav-id-1"
+    assert cfg.grasshopper.configured_accounts[0].account_id == ""
     assert cfg.grasshopper.configured_accounts[1].account_key == "grasshopper_money_market"
-    assert cfg.grasshopper.configured_accounts[1].account_id == "mm-id-2"
+    assert cfg.grasshopper.configured_accounts[1].account_id == ""
 
 
 def test_grasshopper_list_accounts_and_multi_account_fetch() -> None:

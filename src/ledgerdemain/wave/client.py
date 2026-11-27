@@ -8,9 +8,7 @@ from ledgerdemain.http_client import HttpClient, OutcomeUnknownError
 from ledgerdemain.models import (
     WaveAccount,
     WaveCustomer,
-    WaveProduct,
 )
-from ledgerdemain.money import ZERO, parse_money
 
 
 class WaveApiError(RuntimeError):
@@ -116,32 +114,6 @@ query ListCustomers($businessId: ID!, $page: Int!, $pageSize: Int!) {
 }
 """
 
-_LIST_PRODUCTS_QUERY = """
-query ListProducts($businessId: ID!, $page: Int!, $pageSize: Int!) {
-  business(id: $businessId) {
-    id
-    products(page: $page, pageSize: $pageSize) {
-      pageInfo {
-        currentPage
-        totalPages
-        totalCount
-      }
-      edges {
-        node {
-          id
-          name
-          unitPrice
-          incomeAccount {
-            id
-            name
-          }
-        }
-      }
-    }
-  }
-}
-"""
-
 _CUSTOMER_CREATE_MUTATION = """
 mutation CustomerCreate($input: CustomerCreateInput!) {
   customerCreate(input: $input) {
@@ -155,55 +127,6 @@ mutation CustomerCreate($input: CustomerCreateInput!) {
       id
       name
       email
-    }
-  }
-}
-"""
-
-_PRODUCT_CREATE_MUTATION = """
-mutation ProductCreate($input: ProductCreateInput!) {
-  productCreate(input: $input) {
-    didSucceed
-    inputErrors {
-      path
-      message
-      code
-    }
-    product {
-      id
-      name
-      unitPrice
-      incomeAccount {
-        id
-        name
-      }
-    }
-  }
-}
-"""
-
-_INVOICE_CREATE_MUTATION = """
-mutation InvoiceCreate($input: InvoiceCreateInput!) {
-  invoiceCreate(input: $input) {
-    didSucceed
-    inputErrors {
-      path
-      message
-      code
-    }
-    invoice {
-      id
-      invoiceNumber
-      invoiceDate
-      dueDate
-      status
-      total {
-        value
-      }
-      customer {
-        id
-        name
-      }
     }
   }
 }
@@ -360,33 +283,6 @@ class WaveGraphQLClient:
             page += 1
         return customers
 
-    def list_products(self, business_id: str, page_size: int = 100) -> list[WaveProduct]:
-        """List all products/services in a Wave business."""
-        products: list[WaveProduct] = []
-        page = 1
-        while True:
-            data = self._gql(
-                _LIST_PRODUCTS_QUERY,
-                {"businessId": business_id, "page": page, "pageSize": page_size},
-            )
-            conn = (data.get("business") or {}).get("products") or {}
-            for edge in conn.get("edges") or []:
-                node = edge.get("node") or {}
-                income_acc = node.get("incomeAccount") or {}
-                products.append(
-                    WaveProduct(
-                        wave_id=str(node["id"]),
-                        name=str(node["name"]),
-                        unit_price=parse_money(node.get("unitPrice"), ZERO),
-                        income_account_id=str(income_acc.get("id") or ""),
-                    )
-                )
-            info = conn.get("pageInfo") or {}
-            if page >= int(info.get("totalPages", 1)):
-                break
-            page += 1
-        return products
-
     def create_customer(
         self, business_id: str, name: str, email: str | None = None
     ) -> WaveCustomer:
@@ -401,53 +297,6 @@ class WaveGraphQLClient:
             name=str(node["name"]),
             email=str(node.get("email") or ""),
         )
-
-    def create_product(
-        self,
-        business_id: str,
-        name: str,
-        income_account_id: str,
-        unit_price: str = "0.00",
-    ) -> WaveProduct:
-        """Create a product/service via productCreate mutation."""
-        payload = {
-            "businessId": business_id,
-            "name": name,
-            "unitPrice": unit_price,
-            "incomeAccountId": income_account_id,
-        }
-        data = self._gql(_PRODUCT_CREATE_MUTATION, {"input": payload}, idempotent=False)
-        node = _mutation_result(data, "productCreate", "product")
-        income_acc = node.get("incomeAccount") or {}
-        return WaveProduct(
-            wave_id=str(node["id"]),
-            name=str(node["name"]),
-            unit_price=parse_money(node.get("unitPrice"), ZERO),
-            income_account_id=str(income_acc.get("id") or income_account_id),
-        )
-
-    def create_invoice(
-        self,
-        business_id: str,
-        customer_id: str,
-        invoice_number: str,
-        invoice_date: str,
-        due_date: str,
-        items: list[dict[str, Any]],
-        status: str = "SAVED",
-    ) -> dict[str, Any]:
-        """Create an invoice via invoiceCreate mutation."""
-        payload = {
-            "businessId": business_id,
-            "customerId": customer_id,
-            "invoiceNumber": invoice_number,
-            "invoiceDate": invoice_date,
-            "dueDate": due_date,
-            "status": status,
-            "items": items,
-        }
-        data = self._gql(_INVOICE_CREATE_MUTATION, {"input": payload}, idempotent=False)
-        return dict(_mutation_result(data, "invoiceCreate", "invoice"))
 
     def create_money_transaction(self, payload: dict[str, Any]) -> dict[str, Any]:
         """Create a money transaction via moneyTransactionCreate mutation."""

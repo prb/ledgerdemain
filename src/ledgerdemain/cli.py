@@ -389,8 +389,7 @@ def _cmd_wave_sync_meta(args: argparse.Namespace) -> int:
     print(
         f"Synced Wave metadata for {summary.business_name!r}: "
         f"{summary.accounts_synced} accounts, "
-        f"{summary.customers_synced} customers, "
-        f"{summary.products_synced} products."
+        f"{summary.customers_synced} customers."
     )
     for warn in summary.warnings:
         print(f"WARNING: {warn}", file=sys.stderr)
@@ -597,7 +596,6 @@ def _cmd_review(args: argparse.Namespace) -> int:
     _, db = _open_context(Path(args.config))
     with db:
         txs = db.list_staged_transactions(status=args.status)
-        invs = db.list_staged_invoices(status=args.status)
         matches = (
             db.list_matches(status="proposed") if args.status in {"all", "needs_review"} else []
         )
@@ -619,17 +617,6 @@ def _cmd_review(args: argparse.Namespace) -> int:
                     "line_items": [li.to_dict() for li in tx.line_items],
                 }
                 for tx in txs
-            ],
-            "staged_invoices": [
-                {
-                    "id": inv.id,
-                    "invoice_number": inv.invoice_number,
-                    "customer_name": inv.customer_name,
-                    "invoice_date": inv.invoice_date,
-                    "total_amount": format_money(inv.total_amount),
-                    "status": inv.status,
-                }
-                for inv in invs
             ],
             "proposed_matches": [
                 {
@@ -660,13 +647,6 @@ def _cmd_review(args: argparse.Namespace) -> int:
             f"-> [{cats}]{reason}"
         )
 
-    print(f"\nStaged Invoices (filter={args.status}): {len(invs)}")
-    for inv in invs:
-        print(
-            f"  [inv #{inv.id}] #{inv.invoice_number} [{inv.status}] "
-            f"{inv.customer_name} {inv.invoice_date} ${format_money(inv.total_amount)}"
-        )
-
     if matches:
         print(f"\nProposed Matches awaiting confirmation: {len(matches)}")
         for m in matches:
@@ -684,12 +664,8 @@ def _cmd_approve(args: argparse.Namespace) -> int:
         for mid in args.match or []:
             if db.set_match_status(mid, "confirmed"):
                 match_count += 1
-        tx_cnt, inv_cnt = db.approve_staged(
-            all_staged=args.all_staged,
-            tx_ids=args.tx or [],
-            invoice_ids=args.invoice or [],
-        )
-    print(f"Approved: {tx_cnt} transaction(s), {inv_cnt} invoice(s), {match_count} match(es).")
+        tx_cnt = db.approve_staged(all_staged=args.all_staged, tx_ids=args.tx or [])
+    print(f"Approved: {tx_cnt} transaction(s), {match_count} match(es).")
     return 0
 
 
@@ -732,19 +708,13 @@ def _cmd_recategorize(args: argparse.Namespace) -> int:
 def _cmd_push(args: argparse.Namespace) -> int:
     cfg, db = _open_context(Path(args.config))
     with db:
-        summary = WaveSyncService(db, cfg).push(
-            dry_run=args.dry_run,
-            invoices_only=args.invoices_only,
-            transactions_only=args.transactions_only,
-        )
+        summary = WaveSyncService(db, cfg).push(dry_run=args.dry_run)
 
     if args.dry_run:
         output: dict[str, Any] = {
             "dry_run": True,
-            "invoices_ready": summary.invoices_pushed,
             "transactions_ready": summary.transactions_pushed,
             "would_create_customers": summary.would_create_customers,
-            "would_create_products": summary.would_create_products,
             "warnings": summary.warnings,
             "payloads": summary.dry_run_payloads,
         }
@@ -752,9 +722,8 @@ def _cmd_push(args: argparse.Namespace) -> int:
         return 0 if not summary.errors else 1
 
     print(
-        f"Push complete: invoices pushed={summary.invoices_pushed} "
-        f"failed={summary.invoices_failed} | "
-        f"transactions pushed={summary.transactions_pushed} failed={summary.transactions_failed}"
+        f"Push complete: transactions pushed={summary.transactions_pushed} "
+        f"failed={summary.transactions_failed}"
     )
     for err in summary.errors:
         print(f"ERROR: {err}", file=sys.stderr)
@@ -804,9 +773,7 @@ def build_parser() -> argparse.ArgumentParser:
         "list-businesses", help="List Wave businesses accessible to your token"
     )
     p_list_biz.set_defaults(func=_cmd_wave_list_businesses)
-    p_sync_meta = wave_sub.add_parser(
-        "sync-meta", help="Sync Wave Chart of Accounts, customers, and products"
-    )
+    p_sync_meta = wave_sub.add_parser("sync-meta", help="Sync Wave Chart of Accounts and customers")
     p_sync_meta.set_defaults(func=_cmd_wave_sync_meta)
 
     # grasshopper discovery
@@ -887,14 +854,9 @@ def build_parser() -> argparse.ArgumentParser:
     p_rev.set_defaults(func=_cmd_review)
 
     # approve
-    p_app = subparsers.add_parser(
-        "approve", help="Approve staged transactions, invoices, or matches"
-    )
-    p_app.add_argument(
-        "--all-staged", action="store_true", help="Approve all staged transactions and invoices"
-    )
+    p_app = subparsers.add_parser("approve", help="Approve staged transactions or matches")
+    p_app.add_argument("--all-staged", action="store_true", help="Approve all staged transactions")
     p_app.add_argument("--tx", type=int, nargs="*", help="Staged transaction IDs to approve")
-    p_app.add_argument("--invoice", type=int, nargs="*", help="Staged invoice IDs to approve")
     p_app.add_argument("--match", type=int, nargs="*", help="Reconciliation match IDs to confirm")
     p_app.set_defaults(func=_cmd_approve)
 
@@ -913,11 +875,6 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_push.add_argument(
         "--dry-run", action="store_true", help="Validate and output payloads without mutating Wave"
-    )
-    scope = p_push.add_mutually_exclusive_group()
-    scope.add_argument("--invoices-only", action="store_true", help="Only push approved invoices")
-    scope.add_argument(
-        "--transactions-only", action="store_true", help="Only push approved transactions"
     )
     p_push.set_defaults(func=_cmd_push)
 

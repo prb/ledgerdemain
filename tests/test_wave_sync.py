@@ -272,7 +272,7 @@ def test_replan_and_approve_all_do_not_resend_unknown_outcome_transaction(tmp_pa
         # Recategorizing can't reset it either; only an explicit approve re-queues it.
         with pytest.raises(ValueError, match="outcome unknown"):
             db.recategorize_staged_tx(unknown.id, "meals", "INCREASE")
-        assert db.approve_staged(tx_ids=[unknown.id]) == (1, 0)
+        assert db.approve_staged(tx_ids=[unknown.id]) == 1
 
 
 def test_rejected_create_stops_push_without_marking_records(tmp_path: Path) -> None:

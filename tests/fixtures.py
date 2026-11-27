@@ -299,8 +299,6 @@ class MockWaveTransport:
         self.customers: list[dict[str, Any]] = [
             {"id": "cust-acme", "name": "Acme Corp", "email": "ap@acme.example"}
         ]
-        self.products: list[dict[str, Any]] = []
-        self.invoices: list[dict[str, Any]] = []
         self.transactions: list[dict[str, Any]] = []
         self.seen_external_ids: set[str] = set()
         self.fail_next_tx_error: str | None = None
@@ -353,8 +351,6 @@ class MockWaveTransport:
             return self._conn_ok("accounts", self.accounts)
         if "ListCustomers" in query:
             return self._conn_ok("customers", self.customers)
-        if "ListProducts" in query:
-            return self._conn_ok("products", self.products)
         if "CustomerCreate" in query:
             inp = variables["input"]
             node = {
@@ -365,50 +361,6 @@ class MockWaveTransport:
             self.customers.append(node)
             return self._json_ok(
                 {"customerCreate": {"didSucceed": True, "inputErrors": [], "customer": node}}
-            )
-        if "ProductCreate" in query:
-            inp = variables["input"]
-            node = {
-                "id": f"prod-{len(self.products) + 1}",
-                "name": inp["name"],
-                "unitPrice": inp.get("unitPrice", "0.00"),
-                "incomeAccount": {"id": inp["incomeAccountId"], "name": "Sales"},
-            }
-            self.products.append(node)
-            return self._json_ok(
-                {"productCreate": {"didSucceed": True, "inputErrors": [], "product": node}}
-            )
-        if "InvoiceCreate" in query:
-            inp = variables["input"]
-            for idx, item in enumerate(inp.get("items", [])):
-                if "price" in item or "unitPrice" not in item:
-                    return self._json_ok(
-                        {
-                            "invoiceCreate": {
-                                "didSucceed": False,
-                                "inputErrors": [
-                                    {
-                                        "path": ["input", "items", idx],
-                                        "code": "INVALID_FIELD",
-                                        "message": "InvoiceCreateItemInput requires unitPrice",
-                                    }
-                                ],
-                                "invoice": None,
-                            }
-                        }
-                    )
-            node = {
-                "id": f"winv-{len(self.invoices) + 1}",
-                "invoiceNumber": inp.get("invoiceNumber", ""),
-                "invoiceDate": inp.get("invoiceDate", ""),
-                "dueDate": inp.get("dueDate", ""),
-                "status": inp.get("status", "SAVED"),
-                "total": {"value": "0.00"},
-                "customer": {"id": inp["customerId"], "name": ""},
-            }
-            self.invoices.append(node)
-            return self._json_ok(
-                {"invoiceCreate": {"didSucceed": True, "inputErrors": [], "invoice": node}}
             )
         if "MoneyTransactionCreate" in query:
             inp = variables["input"]
